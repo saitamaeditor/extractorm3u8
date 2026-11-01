@@ -192,7 +192,7 @@
         </div>
       </div>
       <label class="check"><input id="tomp4" type="checkbox" checked> Convertir a MP4 (si el stream es .ts)</label>
-      <label class="check" id="diskRow"><input id="todisk" type="checkbox"> Guardar directamente en disco: para vídeos largos, usa poca memoria (no convierte .ts a MP4)</label>
+      <label class="check" id="diskRow"><input id="todisk" type="checkbox"> Elegir dónde guardar (si no, va a tu carpeta de descargas)</label>
     </details>
 
     <div class="btns">
@@ -533,7 +533,7 @@ function isLiveTranscode(pl) {
 async function download() {
   if (busy()) return;
   const ctrl = new AbortController(); state.abort = ctrl;
-  let failed = null, writable = null, embyStream = null;
+  let failed = null, writable = null, embyStream = null, outName = null;
   $('download').disabled = true; $('analyze').disabled = true; $('cancel').classList.remove('hidden');
   $('progress').classList.remove('hidden'); $('log').innerHTML = ''; resetStats();
   try {
@@ -551,10 +551,11 @@ async function download() {
 
     // Guardado directo en disco: el diálogo debe abrirse durante el clic, antes de descargar nada.
     if ($('todisk').checked && window.showSaveFilePicker && !E.queueRunning) { // en cola no hay clic para el diálogo
-      const ext = isFmp4 ? (pl.audioOnly ? 'm4a' : 'mp4') : (/\.aac(\?|$)/i.test(pl.segs[0].url) ? 'aac' : 'ts');
+      const ext = isFmp4 || $('tomp4').checked ? (pl.audioOnly ? 'm4a' : 'mp4') : (/\.aac(\?|$)/i.test(pl.segs[0].url) ? 'aac' : 'ts');
       try {
         const h = await showSaveFilePicker({ suggestedName: base + '.' + ext, types: [{ description: 'Vídeo', accept: { [MIME[ext]]: ['.' + ext] } }] });
         writable = await h.createWritable();
+        outName = h.name;
       } catch (e) {
         if (e.name === 'AbortError') { ctrl.abort(); throw e; }
         throw new Error('El navegador no dejó abrir el diálogo de guardar; pulsa Descargar otra vez');
@@ -579,8 +580,31 @@ async function download() {
       inits.set(m, await fetchBytes(m.url, { range: m.range, signal: ctrl.signal }));
     }
 
+    // Sin diálogo de guardar, se guarda a trozos por el service worker si se puede: así el vídeo no tiene
+    // que caber entero en memoria (con películas de varios GB el navegador acababa dando error de descarga).
+    const streamed = !!writable || await canStream();
+
     const parts = new Array(total);
     let done = 0, bytes = 0, next = 0, writeIdx = 0, writeChain = Promise.resolve(), lastMap = null;
+    let opened = false, convert = null, written = 0;
+    // Al llegar el primer fragmento se decide el formato (y el nombre) y empieza la descarga en el navegador.
+    async function openOutput(seg, data) {
+      opened = true;
+      if (!isFmp4 && $('tomp4').checked) {
+        setStatus('Preparando la conversión a MP4…');
+        convert = await streamConverterFor(data, seg);
+        if (!convert) log('Este vídeo no se puede convertir a MP4 en el navegador; se guarda sin convertir.', 'warn');
+        setStatus('Descargando…');
+      }
+      const ext = isFmp4 || convert ? (pl.audioOnly ? 'm4a' : 'mp4') : rawExt(data);
+      if (!writable) {
+        outName = base + '.' + ext;
+        writable = await openStreamDownload(outName, MIME[ext]);
+        if (!writable) throw new Error('el navegador no dejó empezar la descarga');
+        log(`Guardando en tu carpeta de descargas mientras se descarga: ${outName}`, 'ok');
+      }
+    }
+    const put = async (b) => { written += b.byteLength; await writable.write(b); };
     const t0 = performance.now();
     const tick = () => {
       const secs = (performance.now() - t0) / 1000, speed = bytes / Math.max(secs, 0.1);
@@ -594,9 +618,13 @@ async function download() {
     const flush = () => {
       writeChain = writeChain.then(async () => {
         while (writeIdx < total && parts[writeIdx]) {
-          const s = pl.segs[writeIdx];
-          if (s.map && s.map !== lastMap) { await writable.write(inits.get(s.map)); lastMap = s.map; }
-          await writable.write(parts[writeIdx]);
+          const s = pl.segs[writeIdx], data = parts[writeIdx];
+          if (!opened) await openOutput(s, data);
+          if (convert) { for (const c of convert(data, s)) await put(c); }
+          else {
+            if (s.map && s.map !== lastMap) { await put(inits.get(s.map).slice()); lastMap = s.map; }
+            await put(data);
+          }
           parts[writeIdx++] = null;
         }
       });
@@ -650,10 +678,10 @@ async function download() {
         while (next < total && !ctrl.signal.aborted) {
           const i = next++;
           // En disco, no adelantarse demasiado al fragmento que toca escribir (limita la memoria).
-          while (writable && i - writeIdx > 64 && !ctrl.signal.aborted) await sleep(50);
+          while (streamed && i - writeIdx > 64 && !ctrl.signal.aborted) await sleep(50);
           parts[i] = await fetchSeg(pl.segs[i], w);
           done++; bytes += parts[i].byteLength; tick();
-          if (writable) flush();
+          if (streamed) flush();
         }
       } catch (e) {
         if (!failed && !ctrl.signal.aborted) { failed = e; ctrl.abort(); } // detiene al resto
@@ -664,12 +692,11 @@ async function download() {
     if (ctrl.signal.aborted) throw failed || new DOMException('cancelado', 'AbortError');
 
     let name, size;
-    if (writable) {
+    if (streamed) {
       setStatus('Terminando de guardar…');
       await flush();
       await writable.close(); writable = null;
-      name = base + '.' + (isFmp4 ? (pl.audioOnly ? 'm4a' : 'mp4') : 'ts');
-      size = bytes;
+      name = outName; size = written;
     } else {
       let blob, ext;
       if (isFmp4) {
@@ -691,7 +718,8 @@ async function download() {
       const a = document.createElement('a');
       a.href = URL.createObjectURL(blob); a.download = name;
       document.body.appendChild(a); a.click(); a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+      // Se libera tarde: si se libera mientras el navegador aún lo copia (o con el diálogo abierto), la descarga falla.
+      setTimeout(() => URL.revokeObjectURL(a.href), 600000);
     }
     setFill(1); setStatus(`Descarga completada: ${name} (${mb(size)})`);
     log('Guardado ' + name, 'ok');
@@ -717,9 +745,75 @@ function loadScript(src) {
 }
 // Convierte TS a MP4. Cada tramo tras un #EXT-X-DISCONTINUITY (anuncios, cortes) reinicia
 // sus marcas de tiempo, así que se coloca a continuación del anterior.
-async function tsToMp4(chunks, segs) {
+async function loadMux() {
   muxLoad ||= loadScript('https://cdn.jsdelivr.net/npm/mux.js@7.0.3/dist/mux.min.js');
   try { await muxLoad; } catch (e) { muxLoad = null; throw e; }
+}
+// Conversión TS → MP4 fragmento a fragmento (MP4 fragmentado), para ir guardando según llegan.
+function tsMp4Converter() {
+  let tx = null, group, start = 0, initDone = false;
+  const out = [];
+  return (bytes, seg) => {
+    if (!tx || seg.disc !== group) { // tras una discontinuidad, transmuxer nuevo colocado a continuación
+      tx = new muxjs.mp4.Transmuxer(); group = seg.disc;
+      tx.on('data', (d) => { if (!initDone) { out.push(d.initSegment); initDone = true; } out.push(d.data); });
+      tx.setBaseMediaDecodeTime(Math.round(start * 90000));
+    }
+    tx.push(bytes); tx.flush(); start += seg.dur;
+    return out.splice(0);
+  };
+}
+// Prueba con el primer fragmento si el vídeo se puede convertir (H.265 en TS, por ejemplo, no).
+async function streamConverterFor(firstBytes, firstSeg) {
+  try { await loadMux(); return tsMp4Converter()(firstBytes.slice(), firstSeg).length ? tsMp4Converter() : null; }
+  catch { return null; }
+}
+
+// ---------- guardado a trozos ----------
+// sw.js convierte lo que le manda la página en una descarga normal del navegador, trozo a trozo. Sin
+// service worker (navegación privada en Firefox, página abierta como archivo…) se guarda todo de una vez.
+const swReady = 'serviceWorker' in navigator && window.isSecureContext
+  ? navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(() => navigator.serviceWorker.ready).catch(() => null)
+  : Promise.resolve(null);
+async function canStream() {
+  const reg = await Promise.race([swReady, sleep(3000).then(() => null)]);
+  return !!reg?.active;
+}
+async function openStreamDownload(name, type) {
+  const sw = (await swReady)?.active;
+  if (!sw) return null;
+  const id = rid(), ch = new MessageChannel();
+  let credits = 0, wake = null, cancelled = false;
+  const ready = new Promise((ok) => {
+    ch.port1.onmessage = ({ data }) => {
+      if (data === 'ready') ok(true);
+      else if (data === 'pull') credits++; // el navegador ya guardó lo anterior: se puede mandar otro trozo
+      else if (data === 'cancelled') cancelled = true; // cancelada desde la barra de descargas
+      if (wake) { wake(); wake = null; }
+    };
+  });
+  sw.postMessage({ id, name, type }, [ch.port2]);
+  if (!(await Promise.race([ready, sleep(3000).then(() => false)]))) return null;
+  const frame = document.createElement('iframe');
+  frame.hidden = true; frame.src = '__descarga/' + id;
+  document.body.appendChild(frame);
+  const keepAwake = setInterval(() => sw.postMessage({ ping: true }), 10000); // el navegador duerme a los workers inactivos
+  const finish = () => { clearInterval(keepAwake); setTimeout(() => frame.remove(), 60000); };
+  return {
+    async write(bytes) {
+      while (!credits && !cancelled) await new Promise((r) => (wake = r));
+      if (cancelled) throw new Error('la descarga se canceló en el navegador');
+      credits--;
+      const buf = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes.buffer : bytes.slice().buffer;
+      ch.port1.postMessage(buf, [buf]);
+    },
+    async close() { ch.port1.postMessage('end'); finish(); },
+    async abort() { ch.port1.postMessage('abort'); finish(); },
+  };
+}
+
+async function tsToMp4(chunks, segs) {
+  await loadMux();
   const pieces = []; let init = null;
   let start = 0, i = 0;
   while (i < chunks.length) {

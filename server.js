@@ -56,7 +56,8 @@ function proxy(req, res, target, extra, redirects = 0, body = null) {
 
   const lib = url.protocol === 'https:' ? https : http;
   const method = body ? 'POST' : extra.method === 'DELETE' ? 'DELETE' : 'GET';
-  const up = lib.request(url, { method, headers, timeout: 30000, agent: agents[url.protocol] }, (r) => {
+  // 2 minutos sin recibir nada antes de dar el servidor por perdido (Emby puede tardar al convertir).
+  const up = lib.request(url, { method, headers, timeout: 120000, agent: agents[url.protocol] }, (r) => {
     if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location && redirects < 5) {
       r.resume();
       const keep = r.statusCode === 307 || r.statusCode === 308; // solo estas conservan el POST
@@ -106,6 +107,10 @@ function handle(req, res) {
   if (u.pathname === '/' || u.pathname === '/index.html') {
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-cache' });
     return fs.createReadStream(INDEX).pipe(res);
+  }
+  if (u.pathname === '/sw.js') { // service worker que guarda las descargas grandes a trozos
+    res.writeHead(200, { 'Content-Type': 'text/javascript; charset=utf-8', 'Cache-Control': 'no-cache' });
+    return fs.createReadStream(path.join(__dirname, 'sw.js')).pipe(res);
   }
   fail(req, res, 404, 'No encontrado');
 }
