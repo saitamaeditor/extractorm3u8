@@ -66,6 +66,10 @@ function proxy(req, res, target, extra, redirects = 0, body = null) {
     for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
       if (r.headers[h]) out[h] = r.headers[h];
     }
+    // ?download=nombre: obliga a guardar como archivo (si no, el navegador intentaría reproducir el vídeo).
+    if (extra.filename && r.statusCode < 300) {
+      out['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(extra.filename.replace(/[\\/:*?"<>|\r\n]+/g, '_'))}`;
+    }
     res.writeHead(r.statusCode, out);
     r.pipe(res);
   });
@@ -91,7 +95,7 @@ function handle(req, res) {
   if (u.pathname === '/proxy') {
     if (req.headers.origin && !isLocalOrigin(req.headers.origin)) return fail(req, res, 403, 'Origen no permitido');
     const target = u.searchParams.get('url') || '';
-    const extra = { referer: u.searchParams.get('referer') || '', origin: u.searchParams.get('origin') || '' };
+    const extra = { referer: u.searchParams.get('referer') || '', origin: u.searchParams.get('origin') || '', filename: u.searchParams.get('download') || '' };
     if (req.method !== 'POST') return proxy(req, res, target, extra);
     // POST (inicio de sesión en Emby): se lee el cuerpo entero, máximo 1 MB.
     const chunks = []; let size = 0;

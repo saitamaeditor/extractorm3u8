@@ -1196,16 +1196,52 @@ function m3u8Url(it) {
   });
 }
 
+function originalName(it) {
+  const ext = (msOf(it)?.Container || 'mkv').split(',')[0];
+  return `${itemTitle(it)}.${ext}`.replace(/[\\/:*?"<>|]+/g, '_');
+}
+// Busca una forma de bajar el archivo tal cual. La descarga de Emby lee la ruta del disco del servidor y
+// falla si la película está en un montaje remoto, en un .strm o se movió; el stream estático (sin
+// convertir) sí sirve esos archivos. Solo se usa si el administrador permite descargar.
+async function findOriginal(it) {
+  if (!E.canDownload) return null;
+  const ms = msOf(it), msId = ms?.Id, ext = (ms?.Container || '').split(',')[0];
+  const candidates = [
+    embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token, MediaSourceId: sources(it).length > 1 ? msId : null }),
+    embyUrl(`/Videos/${it.Id}/stream${ext ? '.' + ext : ''}`, { Static: 'true', MediaSourceId: msId, api_key: E.token }),
+  ];
+  for (const u of candidates) {
+    try {
+      const r = await get(u, { range: [0, 0] });
+      const type = r.headers.get('content-type') || '';
+      r.body?.cancel().catch(() => {});
+      if (/^text\/|json/i.test(type)) continue; // página de error aunque responda 200
+      // Por el proxy: guarda con nombre y no lo abre como vídeo; además evita el bloqueo http desde https.
+      return state.proxyOk ? PROXY_BASE + '/proxy?' + new URLSearchParams({ url: u, download: originalName(it) }) : u;
+    } catch (e) {
+      if (e.name === 'AbortError') throw e; // si falla, prueba la siguiente forma
+    }
+  }
+  return null;
+}
+
 function itemButtons(it) {
   const box = el('div', 'btns');
   const orig = el('button', 'primary', 'Descargar original');
   orig.title = 'El archivo tal cual: incluye todos sus idiomas y subtítulos';
   if (!E.canDownload) { orig.disabled = true; orig.title = 'Tu usuario de Emby no tiene permiso para descargar: usa «Bajar como M3U8»'; }
-  orig.onclick = () => {
-    const a = document.createElement('a');
-    const src = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token, MediaSourceId: sources(it).length > 1 ? msOf(it)?.Id : null });
-    a.href = E.viaProxy && state.proxyOk ? viaProxy(src) : src; a.download = ''; // el navegador bloquea descargas http desde https
-    document.body.appendChild(a); a.click(); a.remove();
+  orig.onclick = async () => {
+    orig.disabled = true; orig.textContent = 'Comprobando…';
+    try {
+      const url = await findOriginal(it);
+      if (!url) {
+        if (confirm('Tu servidor Emby no encuentra el archivo original de este vídeo (no está en la ruta que tiene apuntada).\n\n¿Lo bajo por M3U8?')) viaHls.click();
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = url; a.download = originalName(it);
+      document.body.appendChild(a); a.click(); a.remove();
+    } finally { orig.disabled = false; orig.textContent = 'Descargar original'; }
   };
   const viaHls = el('button', '', 'Bajar como M3U8');
   viaHls.onclick = () => {
