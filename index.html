@@ -484,6 +484,7 @@ const selKey = () => (state.master ? $('variant').value : 'single');
 function resolveMedia() {
   const k = selKey();
   if (!state.resolved.has(k)) {
+    if (!state.master) return Promise.reject(new Error('Pulsa «Analizar» antes de descargar'));
     const v = $('variant').value, i = +v.slice(1);
     const src = v[0] === 'a' ? state.master.audio[i] : state.master.variants[i];
     const p = getText(src.url).then(({ text, finalUrl }) => {
