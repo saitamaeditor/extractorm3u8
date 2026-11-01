@@ -31,7 +31,7 @@ const FORWARD = ['range', 'content-type', 'x-emby-authorization', 'x-emby-token'
 function cors(req) {
   const h = {
     'Access-Control-Allow-Headers': 'Range, Content-Type, X-Emby-Authorization, X-Emby-Token',
-    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Content-Type, Content-Disposition, X-Final-Url',
     'Vary': 'Origin',
     // Chrome pide permiso a la web de GitHub Pages para hablar con tu PC (red local).
@@ -55,7 +55,7 @@ function proxy(req, res, target, extra, redirects = 0, body = null) {
   for (const h of FORWARD) if (req.headers[h]) headers[h] = req.headers[h];
 
   const lib = url.protocol === 'https:' ? https : http;
-  const method = body ? 'POST' : 'GET';
+  const method = body ? 'POST' : extra.method === 'DELETE' ? 'DELETE' : 'GET';
   const up = lib.request(url, { method, headers, timeout: 30000, agent: agents[url.protocol] }, (r) => {
     if ([301, 302, 303, 307, 308].includes(r.statusCode) && r.headers.location && redirects < 5) {
       r.resume();
@@ -95,7 +95,7 @@ function handle(req, res) {
   if (u.pathname === '/proxy') {
     if (req.headers.origin && !isLocalOrigin(req.headers.origin)) return fail(req, res, 403, 'Origen no permitido');
     const target = u.searchParams.get('url') || '';
-    const extra = { referer: u.searchParams.get('referer') || '', origin: u.searchParams.get('origin') || '', filename: u.searchParams.get('download') || '' };
+    const extra = { referer: u.searchParams.get('referer') || '', origin: u.searchParams.get('origin') || '', filename: u.searchParams.get('download') || '', method: req.method };
     if (req.method !== 'POST') return proxy(req, res, target, extra);
     // POST (inicio de sesión en Emby): se lee el cuerpo entero, máximo 1 MB.
     const chunks = []; let size = 0;

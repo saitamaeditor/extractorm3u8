@@ -533,7 +533,7 @@ function isLiveTranscode(pl) {
 async function download() {
   if (busy()) return;
   const ctrl = new AbortController(); state.abort = ctrl;
-  let failed = null, writable = null;
+  let failed = null, writable = null, embyStream = null;
   $('download').disabled = true; $('analyze').disabled = true; $('cancel').classList.remove('hidden');
   $('progress').classList.remove('hidden'); $('log').innerHTML = ''; resetStats();
   try {
@@ -604,6 +604,9 @@ async function download() {
       return writeChain;
     };
 
+    const waiting = new Set();
+    const showWaiting = () => setStatus(waiting.size ? `Descargando… (esperando a que el servidor prepare el fragmento ${Math.min(...waiting)})` : 'Descargando…');
+
     async function fetchSeg(s, shard) {
       for (let attempt = 1; ; attempt++) {
         try {
@@ -613,6 +616,7 @@ async function download() {
             const iv = s.key.iv ? hexToBytes(s.key.iv) : seqIv(s.seq);
             buf = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, k, buf));
           }
+          if (waiting.delete(s.seq)) showWaiting();
           return buf;
         } catch (e) {
           if (ctrl.signal.aborted || e.name === 'AbortError') throw e;
@@ -622,8 +626,12 @@ async function download() {
           if (permanent || attempt >= (notReady ? 30 : 5)) {
             throw Object.assign(new Error(`Fragmento ${s.seq}: ${e.message}` + (notReady ? ' (el servidor no llegó a prepararlo)' : '')), { status: e.status });
           }
-          if (!notReady || attempt === 1 || attempt % 10 === 0) {
-            log(`Fragmento ${s.seq}: ${notReady ? 'el servidor aún lo está preparando' : e.message}, reintento ${attempt}…`, 'warn');
+          // Esperar a que el servidor prepare un fragmento es lo normal: se ve en el estado, no en el registro,
+          // salvo que tarde de verdad (~20 s).
+          if (!notReady) log(`Fragmento ${s.seq}: ${e.message}, reintento ${attempt}…`, 'warn');
+          else {
+            waiting.add(s.seq); showWaiting();
+            if (attempt === 8) log(`El servidor está tardando en preparar el fragmento ${s.seq}; sigo esperando…`, 'warn');
           }
           await sleep(notReady ? Math.min(1000 * attempt, 4000) : 600 * attempt);
         }
@@ -633,8 +641,9 @@ async function download() {
     let conc = Math.min(Math.max(+$('conc').value || 16, 1), total);
     if (transcoding && conc > 3) {
       conc = 3;
-      log('El servidor está convirtiendo el vídeo sobre la marcha: descargo de 3 en 3 y en orden, para no reiniciar su conversión. Irá a la velocidad a la que el servidor convierta.', 'warn');
+      log('El servidor convierte el vídeo mientras lo bajas: voy de 3 en 3 y en orden, al ritmo del servidor. Es normal que a veces espere un momento a que prepare el siguiente fragmento.');
     }
+    if (E.activeStream && E.activeStream.url === $('url').value) { embyStream = E.activeStream; embyKeepAlive(embyStream); }
     setStatus('Descargando…');
     const worker = async (_, w) => {
       try {
@@ -693,6 +702,7 @@ async function download() {
     else { setStatus('La descarga falló.'); log('Error: ' + e.message, 'err'); }
   } finally {
     state.abort = null;
+    if (embyStream) embyStopStream(embyStream); // libera la conversión en el servidor (terminada, fallida o cancelada)
     $('download').disabled = false; $('analyze').disabled = false; $('cancel').classList.add('hidden');
   }
 }
@@ -791,12 +801,12 @@ function embyUrl(path, params = {}) {
 }
 
 // Llama a la API de Emby: directo si el servidor lo permite (CORS); si no, por el proxy local.
-async function emby(path, params, body) {
+async function emby(path, params, body, method) {
   const url = embyUrl(path, params);
   const headers = { 'X-Emby-Authorization': embyAuth(), Accept: 'application/json' };
   if (E.token) headers['X-Emby-Token'] = E.token;
   if (body) headers['Content-Type'] = 'application/json';
-  const init = { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined };
+  const init = { method: method || (body ? 'POST' : 'GET'), headers, body: body ? JSON.stringify(body) : undefined };
   let r;
   if (!E.viaProxy) {
     try { r = await fetch(url, init); }
@@ -1182,11 +1192,72 @@ function fileName(it) {
   return n.replace(/[\\/:*?"<>|]+/g, '_');
 }
 
-function m3u8Url(it) {
+const maxWidth = (rate) => ({ 4000000: 1280, 1500000: 854 }[rate]);
+
+// Perfil de dispositivo para Emby: «solo sé reproducir HLS en TS con H.264 + AAC». Así el servidor decide
+// él mismo si copia el vídeo o lo convierte, igual que con sus apps oficiales.
+function deviceProfile(rate, width, burnSubs) {
+  const external = ['srt', 'subrip', 'ass', 'ssa', 'vtt'].map((Format) => ({ Format, Method: 'External' }));
+  return {
+    Name: 'Extractor M3U8', MaxStreamingBitrate: rate, MaxStaticBitrate: rate, MusicStreamingTranscodingBitrate: 192000,
+    DirectPlayProfiles: [],
+    TranscodingProfiles: [{ Container: 'ts', Type: 'Video', VideoCodec: 'h264', AudioCodec: 'aac', Context: 'Streaming', Protocol: 'hls', MaxAudioChannels: '2', MinSegments: 1, BreakOnNonKeyFrames: true }],
+    ContainerProfiles: [], ResponseProfiles: [],
+    CodecProfiles: width ? [{ Type: 'Video', Codec: 'h264', Conditions: [{ Condition: 'LessThanEqual', Property: 'Width', Value: String(width), IsRequired: true }] }] : [],
+    // Sin perfiles de subtítulos, Emby los incrusta en la imagen.
+    SubtitleProfiles: burnSubs ? [] : external,
+  };
+}
+const PB_ERRORS = {
+  NotAllowed: 'Tu usuario de Emby no tiene permiso para reproducir o convertir este vídeo.',
+  NoCompatibleStream: 'Emby no encuentra una forma de enviar este vídeo en un formato compatible.',
+  RateLimitExceeded: 'El servidor Emby está al límite de conversiones a la vez; prueba dentro de un rato.',
+};
+
+// Pide el stream como las apps oficiales (PlaybackInfo): Emby devuelve el enlace exacto que quiere servir.
+// Si el servidor no responde a eso (versiones antiguas, servidores raros), se usa el enlace montado a mano.
+async function requestEmbyStream(it) {
   const rate = +$('eRate').value, ms = msOf(it), { audio, sub } = trackChoice(it);
-  const width = { 4000000: 1280, 1500000: 854 }[rate];
+  try {
+    const info = await emby(`/Items/${it.Id}/PlaybackInfo`, {
+      UserId: E.userId, StartTimeTicks: 0, IsPlayback: 'true', AutoOpenLiveStream: 'true', MaxStreamingBitrate: rate,
+      MediaSourceId: ms?.Id, AudioStreamIndex: audio, SubtitleStreamIndex: sub >= 0 ? sub : -1, DeviceId: deviceId,
+      EnableDirectPlay: 'false', EnableDirectStream: 'false', EnableTranscoding: 'true',
+      AllowVideoStreamCopy: rate >= 20000000 && sub < 0 ? 'true' : 'false', AllowAudioStreamCopy: 'true',
+    }, { DeviceProfile: deviceProfile(rate, maxWidth(rate), sub >= 0) });
+    if (info?.ErrorCode) throw Object.assign(new Error(PB_ERRORS[info.ErrorCode] || 'Emby no puede enviar este vídeo: ' + info.ErrorCode), { fatal: true });
+    const src = (info?.MediaSources || []).find((m) => m.Id === ms?.Id) || info?.MediaSources?.[0];
+    let t = src?.TranscodingUrl;
+    if (t) {
+      if (/^https?:/i.test(t)) return { url: addAuth(t), playSessionId: info.PlaySessionId, official: true };
+      if (/\/emby$/i.test(E.server) && /^\/emby\//i.test(t)) t = t.slice(5); // evita /emby/emby/
+      const url = addAuth(E.server + (t.startsWith('/') ? '' : '/') + t);
+      return { url, playSessionId: info.PlaySessionId || new URL(url).searchParams.get('PlaySessionId'), official: true };
+    }
+  } catch (e) {
+    if (e.fatal) throw e;
+  }
+  const playSessionId = rid();
+  return { url: m3u8Url(it, playSessionId), playSessionId, official: false };
+}
+
+// Mientras se descarga, avisa a Emby de que la sesión sigue viva para que no corte la conversión.
+function embyKeepAlive(s) {
+  clearInterval(s.timer);
+  s.timer = setInterval(() => emby('/Sessions/Playing/Ping', { PlaySessionId: s.playSessionId }, {}).catch(() => {}), 30000);
+}
+// Al terminar o cancelar, cierra la conversión en el servidor para no dejarlo trabajando para nadie.
+function embyStopStream(s) {
+  clearInterval(s.timer);
+  emby('/Videos/ActiveEncodings', { DeviceId: deviceId, PlaySessionId: s.playSessionId }, null, 'DELETE').catch(() => {});
+  if (E.activeStream === s) E.activeStream = null;
+}
+
+function m3u8Url(it, playSessionId = rid()) {
+  const rate = +$('eRate').value, ms = msOf(it), { audio, sub } = trackChoice(it);
+  const width = maxWidth(rate);
   return embyUrl(`/Videos/${it.Id}/master.m3u8`, {
-    MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: rid(), api_key: E.token,
+    MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: playSessionId, api_key: E.token,
     VideoCodec: 'h264', AudioCodec: 'aac', VideoBitrate: rate - 192000, AudioBitrate: 192000, MaxWidth: width,
     TranscodingMaxAudioChannels: 2, SegmentContainer: 'ts', MinSegments: 1, BreakOnNonKeyFrames: 'True',
     AudioStreamIndex: audio,
@@ -1244,18 +1315,29 @@ function itemButtons(it) {
     } finally { orig.disabled = false; orig.textContent = 'Descargar original'; }
   };
   const viaHls = el('button', '', 'Bajar como M3U8');
-  viaHls.onclick = () => {
+  viaHls.onclick = async () => {
     if (busy()) return alert('Espera a que termine la descarga en curso o cancélala.');
-    showTab('m3u8');
-    $('url').value = m3u8Url(it);
-    $('name').value = fileName(it); E.autoName = true;
-    analyze();
+    viaHls.disabled = true; viaHls.textContent = 'Preparando…';
+    try {
+      const s = await requestEmbyStream(it);
+      if (E.activeStream) embyStopStream(E.activeStream); // cierra la conversión anterior que no se llegó a bajar
+      E.activeStream = s;
+      showTab('m3u8');
+      $('url').value = s.url;
+      $('name').value = fileName(it); E.autoName = true;
+      await analyze();
+      if (!s.official) log('Este servidor no respondió como las apps de Emby; uso un enlace montado a mano.', 'warn');
+    } catch (e) { alert(e.message); }
+    finally { viaHls.disabled = false; viaHls.textContent = 'Bajar como M3U8'; }
   };
   const copy = el('button', '', 'Copiar enlace M3U8');
   copy.onclick = async () => {
-    const u = m3u8Url(it);
-    try { await navigator.clipboard.writeText(u); copy.textContent = '¡Copiado!'; } catch { prompt('Copia este enlace:', u); }
-    setTimeout(() => (copy.textContent = 'Copiar enlace M3U8'), 1500);
+    copy.disabled = true;
+    try {
+      const u = (await requestEmbyStream(it)).url;
+      try { await navigator.clipboard.writeText(u); copy.textContent = '¡Copiado!'; } catch { prompt('Copia este enlace:', u); }
+    } catch (e) { alert(e.message); }
+    finally { copy.disabled = false; setTimeout(() => (copy.textContent = 'Copiar enlace M3U8'), 1500); }
   };
   const pick = el('label', 'pick');
   const cb = el('input'); cb.type = 'checkbox'; cb.dataset.id = it.Id; cb.checked = E.selected.has(it.Id);
@@ -1288,10 +1370,14 @@ async function runQueue() {
     for (let i = 0; i < items.length; i++) {
       const it = items[i];
       $('eSelCount').textContent = `Descargando ${i + 1} de ${items.length}: ${itemTitle(it)}`;
-      $('url').value = m3u8Url(it);
+      let s;
+      try { s = await requestEmbyStream(it); }
+      catch (e) { log(`${itemTitle(it)}: ${e.message}`, 'err'); continue; }
+      E.activeStream = s;
+      $('url').value = s.url;
       $('name').value = fileName(it); E.autoName = true;
       await analyze();
-      if ($('pick').classList.contains('hidden')) continue; // no se pudo leer: pasa al siguiente
+      if ($('pick').classList.contains('hidden')) { embyStopStream(s); continue; } // no se pudo leer: pasa al siguiente
       log(`Cola: ${i + 1} de ${items.length}`, 'ok');
       await download();
       if (/cancelada/.test($('status').textContent)) break; // cancelar detiene toda la cola
