@@ -78,6 +78,10 @@
   .langs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
   .langs label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
   .langs select { width: auto; max-width: 260px; padding: 5px 8px; font-size: 13px; }
+  .langs button { padding: 5px 10px; font-size: 13px; }
+  .etools { margin: 0 0 12px; align-items: center; }
+  .etools #eCount { margin-left: auto; font-size: 13px; }
+  .more { width: 100%; color: var(--muted); }
   .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--track); color: var(--muted); margin-left: 6px; }
 </style>
 </head>
@@ -138,6 +142,19 @@
         </span>
       </div>
       <div class="crumb"><button id="eBack" class="hidden">← Atrás</button><span id="eTitle"></span><button id="eSelAll" class="hidden" style="margin-left:auto">Seleccionar todo</button></div>
+      <div id="eTools" class="langs etools hidden">
+        <label>Ordenar
+          <select id="eSort">
+            <option value="SortName|Ascending">Nombre (A-Z)</option>
+            <option value="DateCreated,SortName|Descending">Añadidas recientemente</option>
+            <option value="ProductionYear,SortName|Descending">Año (más nuevas)</option>
+            <option value="ProductionYear,SortName|Ascending">Año (más antiguas)</option>
+            <option value="CommunityRating,SortName|Descending">Mejor valoradas</option>
+          </select>
+        </label>
+        <label>Género <select id="eGenre"><option value="">Todos</option></select></label>
+        <span id="eCount" class="info"></span>
+      </div>
       <div id="eList" class="elist"></div>
     </div>
   </section>
@@ -850,27 +867,65 @@ function embyLogout(msg) {
 }
 
 const FIELDS = 'MediaSources,MediaStreams,ProductionYear,RunTimeTicks,ChildCount';
-function embyHome() { E.stack = []; $('eSearch').value = ''; embyOpen({ title: 'Bibliotecas', load: () => emby(`/Users/${E.userId}/Views`) }); }
+const PAGE = 100; // títulos por página: las bibliotecas grandes se cargan al ir bajando
+const LATEST = {
+  Id: '__latest', Name: 'Recién añadidas', Type: 'Folder', IsFolder: true, _meta: 'Películas y episodios nuevos en el servidor',
+  _open: () => ({ title: 'Recién añadidas', load: async () => ({ Items: await emby(`/Users/${E.userId}/Items/Latest`, { Limit: 60, Fields: FIELDS, IncludeItemTypes: 'Movie,Episode', GroupItems: false }) || [] }) }),
+};
+function embyHome() {
+  E.stack = []; $('eSearch').value = '';
+  embyOpen({ title: 'Bibliotecas', load: async () => ({ Items: [LATEST, ...((await emby(`/Users/${E.userId}/Views`))?.Items || [])] }) });
+}
 function embyOpen(view) { E.stack.push(view); renderView(); }
 function embyBack() { if (E.stack.length > 1) { const v = E.stack.pop(); if (v.search) $('eSearch').value = ''; renderView(); } }
-const children = (it) => emby(`/Users/${E.userId}/Items`, {
-  ParentId: it.Id, Fields: FIELDS, Limit: 1000, SortOrder: 'Ascending',
+const children = (it, start = 0) => emby(`/Users/${E.userId}/Items`, {
+  ParentId: it.Id, Fields: FIELDS, StartIndex: start, Limit: PAGE, SortOrder: 'Ascending',
   SortBy: it.Type === 'Series' || it.Type === 'Season' ? 'ParentIndexNumber,IndexNumber,SortName' : 'SortName',
 });
+
+// Qué se ve al abrir algo. Las bibliotecas de películas y series se listan enteras (sin sus carpetas
+// internas) y se pueden ordenar y filtrar por género.
+function viewFor(it) {
+  if (it._open) return it._open();
+  const ct = it.CollectionType;
+  if (it.Type === 'CollectionFolder' && (ct === 'movies' || ct === 'tvshows')) {
+    const type = ct === 'movies' ? 'Movie' : 'Series';
+    // Cada biblioteca recuerda su orden y su género mientras dure la sesión.
+    const view = { title: it.Name, lib: it, type, paged: true, ...(E.libState[it.Id] ||= { sort: 'SortName|Ascending', genre: '' }) };
+    view.load = (start) => {
+      const [SortBy, SortOrder] = view.sort.split('|');
+      return emby(`/Users/${E.userId}/Items`, { ParentId: it.Id, Recursive: true, IncludeItemTypes: type, Fields: FIELDS, StartIndex: start, Limit: PAGE, SortBy, SortOrder, Genres: view.genre });
+    };
+    return view;
+  }
+  return { title: it.Name, paged: true, load: (start) => children(it, start) };
+}
+
+const isPlayable = (it) => PLAYABLE.has(it.Type) || (it.MediaType === 'Video' && !it.IsFolder);
+function setCount(view) {
+  const n = E.viewItems.length;
+  $('eCount').textContent = view.total > n ? `${n} de ${view.total} títulos` : `${view.total} títulos`;
+}
 
 async function renderView() {
   const view = E.stack[E.stack.length - 1], id = ++E.renderId, list = $('eList');
   $('eBack').classList.toggle('hidden', E.stack.length < 2);
   $('eTitle').textContent = view.title;
+  $('eTools').classList.toggle('hidden', !view.lib);
+  if (view.lib) { $('eSort').value = view.sort; loadGenres(view); $('eCount').textContent = ''; }
   list.replaceChildren(el('div', 'empty', 'Cargando…'));
   try {
-    const res = await view.load();
+    const res = await view.load(0);
     if (id !== E.renderId) return; // ya se ha abierto otra cosa
-    const items = res?.Items || [];
+    const items = Array.isArray(res) ? res : res?.Items || [];
     E.viewItems = items;
+    view.total = res?.TotalRecordCount ?? items.length;
     refreshPrefs(items);
-    list.replaceChildren(...(items.length ? items.map(renderItem) : [el('div', 'empty', 'No hay nada aquí.')]));
-    $('eSelAll').classList.toggle('hidden', !items.some((it) => PLAYABLE.has(it.Type) || (it.MediaType === 'Video' && !it.IsFolder)));
+    list.replaceChildren(...(items.length ? items.map(renderItem) : [el('div', 'empty', view.genre ? 'No hay títulos de ese género.' : 'No hay nada aquí.')]));
+    const more = view.paged && moreButton(view, id);
+    if (more) list.appendChild(more);
+    if (view.lib) setCount(view);
+    $('eSelAll').classList.toggle('hidden', !items.some(isPlayable));
     updateSel();
   } catch (e) {
     if (id !== E.renderId) return;
@@ -879,6 +934,54 @@ async function renderView() {
   }
 }
 
+// Botón al final de la lista que trae la página siguiente; se pulsa solo al acercarse al final.
+function moreButton(view, id) {
+  if (E.viewItems.length >= view.total) return null;
+  const b = el('button', 'more', `Cargar más (${E.viewItems.length} de ${view.total})`);
+  const go = async () => {
+    if (b.disabled) return;
+    b.disabled = true; b.textContent = 'Cargando…';
+    try {
+      const res = await view.load(E.viewItems.length);
+      if (id !== E.renderId) return;
+      const items = res?.Items || [];
+      if (!items.length) view.total = E.viewItems.length; // el servidor no da más aunque dijera otra cosa
+      E.viewItems.push(...items);
+      refreshPrefs(items);
+      const next = moreButton(view, id);
+      b.replaceWith(...items.map(renderItem), ...(next ? [next] : []));
+      if (view.lib) setCount(view);
+      $('eSelAll').classList.toggle('hidden', !E.viewItems.some(isPlayable));
+      updateSel();
+    } catch (e) { b.disabled = false; b.textContent = `No se pudo cargar (${e.message}): pulsa para reintentar`; }
+  };
+  b.onclick = go;
+  const io = new IntersectionObserver((en) => { if (en[0].isIntersecting) { io.disconnect(); go(); } }, { rootMargin: '600px' });
+  io.observe(b);
+  return b;
+}
+
+function loadGenres(view) {
+  const sel = $('eGenre');
+  sel.replaceChildren(new Option('Todos', ''));
+  view.genres ||= emby('/Genres', { ParentId: view.lib.Id, UserId: E.userId, IncludeItemTypes: view.type, SortBy: 'SortName' })
+    .then((r) => (r?.Items || []).map((g) => g.Name)).catch(() => []);
+  view.genres.then((names) => {
+    if (E.stack[E.stack.length - 1] !== view) return;
+    sel.replaceChildren(new Option('Todos', ''), ...names.map((n) => new Option(n, n)));
+    sel.value = view.genre;
+  });
+}
+E.libState = {};
+function setLibFilter(key, value) {
+  const v = E.stack[E.stack.length - 1];
+  if (!v?.lib) return;
+  v[key] = value; E.libState[v.lib.Id] = { sort: v.sort, genre: v.genre };
+  renderView();
+}
+$('eSort').onchange = () => setLibFilter('sort', $('eSort').value);
+$('eGenre').onchange = () => setLibFilter('genre', $('eGenre').value);
+
 const PLAYABLE = new Set(['Movie', 'Episode', 'Video', 'MusicVideo', 'Trailer']);
 const TYPE_ES = { Movie: 'Película', Episode: 'Episodio', Series: 'Serie', Season: 'Temporada', BoxSet: 'Colección', Folder: 'Carpeta', CollectionFolder: 'Biblioteca', Video: 'Vídeo', MusicVideo: 'Videoclip', Trailer: 'Tráiler' };
 function itemTitle(it) {
@@ -886,10 +989,31 @@ function itemTitle(it) {
   const se = (it.ParentIndexNumber != null ? 'T' + it.ParentIndexNumber : '') + (it.IndexNumber != null ? 'E' + it.IndexNumber : '');
   return [it.SeriesName, se, it.Name].filter(Boolean).join(' · ');
 }
+// Versión elegida de un vídeo (Emby puede tener varias: 1080p, 4K…).
+const sources = (it) => it.MediaSources || [];
+const msOf = (it) => sources(it)[E.choices.get(it.Id)?.source ?? 0] || sources(it)[0];
+// «4K · HEVC · 18,5 Mbps · HDR10» a partir de la pista de vídeo.
+function videoInfo(ms) {
+  const v = (ms?.MediaStreams || []).find((s) => s.Type === 'Video');
+  if (!v) return null;
+  const w = v.Width || 0, h = v.Height || 0;
+  const res = w >= 3200 || h >= 2000 ? '4K' : w >= 1800 || h >= 1000 ? '1080p' : w >= 1200 || h >= 700 ? '720p' : h ? h + 'p' : null;
+  const hdr = v.VideoRange && v.VideoRange !== 'SDR' ? (v.VideoRangeType || v.VideoRange) : null;
+  const rate = ms.Bitrate || v.BitRate;
+  return [res, v.Codec?.toUpperCase(), rate ? (rate / 1e6).toFixed(1).replace('.', ',') + ' Mbps' : null, hdr].filter(Boolean).join(' · ');
+}
+const size = (b) => (b >= 1073741824 ? (b / 1073741824).toFixed(1).replace('.', ',') + ' GB' : Math.round(b / 1048576) + ' MB');
+function versionLabel(ms, i) {
+  const info = videoInfo(ms) || '';
+  const name = ms.Name && !info.toLowerCase().includes(ms.Name.toLowerCase()) ? ms.Name : null; // evita «1080p · 1080p»
+  return [name, info, ms.Size ? size(ms.Size) : null].filter(Boolean).join(' · ') || 'Versión ' + (i + 1);
+}
 function itemMeta(it) {
-  const ms = it.MediaSources?.[0];
+  if (it._meta) return it._meta;
+  const ms = msOf(it);
   return [TYPE_ES[it.Type] || it.Type, it.ProductionYear, it.RunTimeTicks ? hms(it.RunTimeTicks / 1e7) : null,
-    ms?.Size ? mb(ms.Size) : null, ms?.Container?.toUpperCase(), it.ChildCount ? it.ChildCount + ' elementos' : null].filter(Boolean).join(' · ');
+    videoInfo(ms), ms?.Size ? size(ms.Size) : null, ms?.Container?.toUpperCase(),
+    sources(it).length > 1 ? sources(it).length + ' versiones' : null, it.ChildCount ? it.ChildCount + ' elementos' : null].filter(Boolean).join(' · ');
 }
 
 function renderItem(it) {
@@ -907,7 +1031,7 @@ function renderItem(it) {
   const langs = langSummary(it);
   if (langs) body.appendChild(el('div', 'm', langs));
   if (playable) { const lp = langPickers(it); if (lp) body.appendChild(lp); body.appendChild(itemButtons(it)); }
-  else { row.tabIndex = 0; row.onclick = () => embyOpen({ title: it.Name, load: () => children(it) }); row.onkeydown = (e) => { if (e.key === 'Enter') row.onclick(); }; }
+  else { row.tabIndex = 0; row.onclick = () => embyOpen(viewFor(it)); row.onkeydown = (e) => { if (e.key === 'Enter') row.onclick(); }; }
   row.append(img, body);
   return row;
 }
@@ -925,7 +1049,7 @@ function langName(k) {
   try { const n = langNames?.of(k); if (n && n.toLowerCase() !== k) return n[0].toUpperCase() + n.slice(1); } catch {}
   return k.toUpperCase();
 }
-const tracks = (it, type) => (it.MediaSources?.[0]?.MediaStreams || it.MediaStreams || []).filter((s) => s.Type === type);
+const tracks = (it, type) => (msOf(it)?.MediaStreams || it.MediaStreams || []).filter((s) => s.Type === type);
 const CHANNELS = { 1: 'mono', 2: 'estéreo', 6: '5.1', 8: '7.1' };
 function streamLabel(s) {
   const name = langName(langKey(s)), parts = [name];
@@ -943,7 +1067,7 @@ function langSummary(it) {
 // Pistas para un vídeo: lo elegido a mano en él, si no el idioma preferido, si no lo que marque Emby.
 E.choices = new Map();
 function trackChoice(it) {
-  const ms = it.MediaSources?.[0], aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle'), c = E.choices.get(it.Id) || {};
+  const ms = msOf(it), aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle'), c = E.choices.get(it.Id) || {};
   const ap = $('eAudioPref').value, sp = $('eSubPref').value;
   let audio = c.audio, sub = c.sub;
   if (audio == null) {
@@ -957,21 +1081,67 @@ function trackChoice(it) {
   return { audio, sub, audioStream: aud.find((s) => s.Index === audio), subStream: subs.find((s) => s.Index === sub) };
 }
 
+// Subtítulos de texto (SRT, ASS, VTT…) se pueden bajar como .srt; los de imagen (PGS, VobSub) no.
+const isTextSub = (s) => s.IsTextSubtitleStream ?? /srt|subrip|ass|ssa|vtt|mov_text|text|smi/i.test(s.Codec || '');
+
 function langPickers(it) {
-  const aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle');
-  if (aud.length < 2 && !subs.length) return null;
+  const aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle'), srcs = sources(it);
+  if (aud.length < 2 && !subs.length && srcs.length < 2) return null;
   const ch = trackChoice(it), wrap = el('div', 'langs');
-  const pickerFor = (label, opts, value, key) => {
+  const pickerFor = (label, opts, value, onChange) => {
     const l = el('label'), s = el('select');
     for (const [v, t] of opts) s.add(new Option(t, v));
     s.value = String(value);
-    s.onchange = () => { E.choices.set(it.Id, { ...E.choices.get(it.Id), [key]: +s.value }); };
+    s.onchange = () => onChange(+s.value, s);
     l.append(document.createTextNode(label), s);
     return l;
   };
-  if (aud.length) wrap.append(pickerFor('Audio', aud.map((s) => [s.Index, streamLabel(s)]), ch.audio, 'audio'));
-  if (subs.length) wrap.append(pickerFor('Subtítulos', [[-1, 'Sin subtítulos'], ...subs.map((s) => [s.Index, streamLabel(s)])], ch.sub, 'sub'));
+  const choose = (key) => (v) => E.choices.set(it.Id, { ...E.choices.get(it.Id), [key]: v });
+  if (srcs.length > 1) {
+    const cur = E.choices.get(it.Id)?.source ?? 0;
+    wrap.append(pickerFor('Versión', srcs.map((ms, i) => [i, versionLabel(ms, i)]), cur, (v, s) => {
+      // Cada versión tiene sus propias pistas: se olvida lo elegido y se redibuja el vídeo.
+      E.choices.set(it.Id, { source: v });
+      s.closest('.item').replaceWith(renderItem(it));
+      updateSel();
+    }));
+  }
+  if (aud.length) wrap.append(pickerFor('Audio', aud.map((s) => [s.Index, streamLabel(s)]), ch.audio, choose('audio')));
+  if (subs.length) {
+    const srt = el('button', '', 'Bajar .srt');
+    const sync = (v) => {
+      const s = subs.find((x) => x.Index === v);
+      srt.disabled = !s || !isTextSub(s);
+      srt.title = !s ? 'Elige primero unos subtítulos' : isTextSub(s) ? 'Guarda estos subtítulos como archivo .srt aparte' : 'Son subtítulos de imagen (PGS/VobSub): no se pueden pasar a .srt';
+    };
+    wrap.append(pickerFor('Subtítulos', [[-1, 'Sin subtítulos'], ...subs.map((s) => [s.Index, streamLabel(s)])], ch.sub, (v) => { choose('sub')(v); sync(v); }), srt);
+    sync(ch.sub);
+    srt.onclick = () => downloadSrt(it, subs.find((x) => x.Index === trackChoice(it).sub), srt);
+  }
   return wrap;
+}
+
+function saveBlob(blob, name) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob); a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+}
+async function downloadSrt(it, s, btn) {
+  if (!s) return;
+  const url = embyUrl(`/Videos/${it.Id}/${msOf(it).Id}/Subtitles/${s.Index}/Stream.srt`, { api_key: E.token });
+  btn.disabled = true; btn.textContent = 'Bajando…';
+  try {
+    const bytes = await fetchBytes(url);
+    const name = `${itemTitle(it)}.${langKey(s)}${s.IsForced ? '.forzados' : ''}.srt`.replace(/[\\/:*?"<>|]+/g, '_');
+    saveBlob(new Blob([bytes], { type: 'application/x-subrip' }), name);
+    btn.textContent = '¡Bajado!';
+  } catch (e) {
+    btn.textContent = 'Bajar .srt';
+    alert('No se pudo bajar el subtítulo: ' + e.message);
+  } finally {
+    setTimeout(() => { btn.textContent = 'Bajar .srt'; btn.disabled = false; }, 1500);
+  }
 }
 
 // Las listas de idiomas preferidos se van llenando con los que aparecen en el catálogo.
@@ -1013,7 +1183,7 @@ function fileName(it) {
 }
 
 function m3u8Url(it) {
-  const rate = +$('eRate').value, ms = it.MediaSources?.[0], { audio, sub } = trackChoice(it);
+  const rate = +$('eRate').value, ms = msOf(it), { audio, sub } = trackChoice(it);
   const width = { 4000000: 1280, 1500000: 854 }[rate];
   return embyUrl(`/Videos/${it.Id}/master.m3u8`, {
     MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: rid(), api_key: E.token,
@@ -1033,7 +1203,7 @@ function itemButtons(it) {
   if (!E.canDownload) { orig.disabled = true; orig.title = 'Tu usuario de Emby no tiene permiso para descargar: usa «Bajar como M3U8»'; }
   orig.onclick = () => {
     const a = document.createElement('a');
-    const src = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token });
+    const src = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token, MediaSourceId: sources(it).length > 1 ? msOf(it)?.Id : null });
     a.href = E.viaProxy && state.proxyOk ? viaProxy(src) : src; a.download = ''; // el navegador bloquea descargas http desde https
     document.body.appendChild(a); a.click(); a.remove();
   };
