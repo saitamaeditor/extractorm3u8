@@ -224,30 +224,39 @@ const state = {
 // El navegador solo abre 6 conexiones por dirección; repartir las peticiones al
 // proxy entre s0.localhost, s1.localhost… multiplica las descargas simultáneas.
 const SHARDS = 8;
-const shardBase = (n) => `${location.protocol}//s${n}.localhost:${location.port}`;
+// Dónde está el proxy: en la propia página si la sirve server.js; si se abre desde GitHub Pages
+// (o como archivo), en el server.js de tu PC (http://localhost:4200).
+const LOCAL_PAGE = /^(localhost|127\.0\.0\.1|\[::1\]|s\d+\.localhost)$/.test(location.hostname) && location.protocol === 'http:';
+const PROXY_PORT = LOCAL_PAGE ? location.port : '4200';
+const PROXY_BASE = LOCAL_PAGE ? '' : `http://localhost:${PROXY_PORT}`;
+const START_HINT = LOCAL_PAGE ? 'abre la página con «npm start»' : 'arranca el servidor en tu PC con «npm start» y recarga';
+const shardBase = (n) => `http://s${n}.localhost:${PROXY_PORT}`;
 const proxify = (u, shard) => {
   const q = new URLSearchParams({ url: u });
   const ref = $('referer').value.trim();
   if (ref) { q.set('referer', ref); try { q.set('origin', new URL(ref).origin); } catch {} }
-  return (shard != null && state.shards ? shardBase(shard % state.shards) : '') + '/proxy?' + q;
+  return (shard != null && state.shards ? shardBase(shard % state.shards) : PROXY_BASE) + '/proxy?' + q;
 };
+const viaProxy = (u) => PROXY_BASE + '/proxy?' + new URLSearchParams({ url: u });
 
 async function checkProxy() {
-  try { state.proxyOk = location.protocol.startsWith('http') && (await fetch('/health')).ok; }
+  try { state.proxyOk = (await fetch(PROXY_BASE + '/health')).ok; }
   catch { state.proxyOk = false; }
-  if (state.proxyOk && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+  if (state.proxyOk) {
     try { state.shards = (await fetch(shardBase(1) + '/health')).ok ? SHARDS : 0; } catch { state.shards = 0; }
   }
   $('proxyState').textContent = state.proxyOk
-    ? 'Proxy local activo: se usará si el servidor del vídeo bloquea la descarga directa (CORS).'
-    : 'Sin proxy local: abre la página con «node server.js» para descargar vídeos que bloquean CORS o piden Referer.';
+    ? (LOCAL_PAGE ? 'Proxy local activo' : 'Conectado al servidor de tu PC') + ': se usará si el servidor del vídeo bloquea la descarga directa (CORS).'
+    : LOCAL_PAGE
+      ? 'Sin proxy local: abre la página con «npm start» para descargar vídeos que bloquean CORS o piden Referer.'
+      : 'Sin el servidor de tu PC: solo funcionan los enlaces que permiten descarga directa. Para Emby y el resto, arranca «npm start» en tu PC y recarga (si el navegador pide permiso para acceder a la red local, acéptalo).';
 }
 const proxyReady = checkProxy();
 
 function pickMode() {
   const m = $('mode').value;
   if (m === 'proxy' || $('referer').value.trim()) {
-    if (!state.proxyOk) throw new Error('El Referer y el modo proxy necesitan el proxy local: abre la página con «node server.js»');
+    if (!state.proxyOk) throw new Error('El Referer y el modo proxy necesitan el proxy local: ' + START_HINT);
     return 'proxy';
   }
   return m === 'direct' ? 'direct' : null; // null = probar directa y caer al proxy
@@ -775,11 +784,15 @@ async function emby(path, params, body) {
     try { r = await fetch(url, init); }
     catch {
       await proxyReady;
-      if (!state.proxyOk) throw new Error('No se puede conectar con el servidor Emby. Revisa la dirección o abre la página con «node server.js».');
+      if (!state.proxyOk) {
+        throw new Error(location.protocol === 'https:' && url.startsWith('http:')
+          ? 'Esta página es https y tu Emby es http: el navegador no deja conectar directamente. ' + START_HINT[0].toUpperCase() + START_HINT.slice(1) + '.'
+          : 'No se puede conectar con el servidor Emby. Revisa la dirección o ' + START_HINT + '.');
+      }
       E.viaProxy = true;
     }
   }
-  if (E.viaProxy) r = await fetch('/proxy?' + new URLSearchParams({ url }), init);
+  if (E.viaProxy) r = await fetch(viaProxy(url), init);
   if (r.status === 401 || r.status === 403) {
     throw Object.assign(new Error(E.token ? 'La sesión de Emby ha caducado: vuelve a conectar.' : 'Usuario o contraseña incorrectos.'), { auth: !!E.token });
   }
@@ -883,7 +896,10 @@ function renderItem(it) {
   const row = el('div', 'item' + (playable ? '' : ' folder'));
   const img = el('img', 'thumb'); img.alt = ''; img.loading = 'lazy';
   const tag = it.ImageTags?.Primary, imgId = tag ? it.Id : it.SeriesId, imgTag = tag || it.SeriesPrimaryImageTag;
-  if (imgId && imgTag) img.src = embyUrl(`/Items/${imgId}/Images/Primary`, { maxHeight: 160, tag: imgTag, api_key: E.token });
+  if (imgId && imgTag) {
+    const src = embyUrl(`/Items/${imgId}/Images/Primary`, { maxHeight: 160, tag: imgTag, api_key: E.token });
+    img.src = E.viaProxy && state.proxyOk ? viaProxy(src) : src; // una página https no puede cargar imágenes http
+  }
   img.onerror = () => img.removeAttribute('src');
   const body = el('div');
   body.append(el('div', 't', itemTitle(it)), el('div', 'm', itemMeta(it)));
@@ -1016,7 +1032,8 @@ function itemButtons(it) {
   if (!E.canDownload) { orig.disabled = true; orig.title = 'Tu usuario de Emby no tiene permiso para descargar: usa «Bajar como M3U8»'; }
   orig.onclick = () => {
     const a = document.createElement('a');
-    a.href = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token }); a.download = '';
+    const src = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token });
+    a.href = E.viaProxy && state.proxyOk ? viaProxy(src) : src; a.download = ''; // el navegador bloquea descargas http desde https
     document.body.appendChild(a); a.click(); a.remove();
   };
   const viaHls = el('button', '', 'Bajar como M3U8');

@@ -15,10 +15,15 @@ const agents = {
   'https:': new https.Agent({ keepAlive: true, maxSockets: 64 }),
 };
 
-// Solo la propia página (localhost, 127.0.0.1, [::1] y los sN.localhost del reparto)
-// puede usar el proxy: así otras webs que abras no pueden aprovecharlo.
+// Solo la propia página (localhost, 127.0.0.1, [::1] y los sN.localhost del reparto) y la copia
+// publicada en GitHub Pages pueden usar el proxy: así otras webs que abras no pueden aprovecharlo.
+// Para otra dirección: ALLOWED_ORIGINS=https://tu-usuario.github.io npm start
 const LOCAL_HOST = new RegExp(`^(localhost|127\\.0\\.0\\.1|\\[::1\\]|s\\d+\\.localhost):${PORT}$`);
-const isLocalOrigin = (o) => { try { return LOCAL_HOST.test(new URL(o).host); } catch { return false; } };
+const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || 'https://saitamaeditor.github.io').split(',').map((s) => s.trim()).filter(Boolean);
+const isLocalOrigin = (o) => {
+  if (ALLOWED_ORIGINS.includes(o)) return true;
+  try { return LOCAL_HOST.test(new URL(o).host); } catch { return false; }
+};
 
 // Cabeceras de la página que se reenvían al servidor del vídeo (Emby usa X-Emby-*).
 const FORWARD = ['range', 'content-type', 'x-emby-authorization', 'x-emby-token'];
@@ -27,8 +32,10 @@ function cors(req) {
   const h = {
     'Access-Control-Allow-Headers': 'Range, Content-Type, X-Emby-Authorization, X-Emby-Token',
     'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Content-Type, X-Final-Url',
+    'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Content-Type, Content-Disposition, X-Final-Url',
     'Vary': 'Origin',
+    // Chrome pide permiso a la web de GitHub Pages para hablar con tu PC (red local).
+    'Access-Control-Allow-Private-Network': 'true',
   };
   if (req.headers.origin && isLocalOrigin(req.headers.origin)) h['Access-Control-Allow-Origin'] = req.headers.origin;
   return h;
@@ -56,7 +63,7 @@ function proxy(req, res, target, extra, redirects = 0, body = null) {
       return proxy(req, res, new URL(r.headers.location, url).href, extra, redirects + 1, keep ? body : null);
     }
     const out = { ...cors(req), 'X-Final-Url': url.href };
-    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges']) {
+    for (const h of ['content-type', 'content-length', 'content-range', 'accept-ranges', 'content-disposition']) {
       if (r.headers[h]) out[h] = r.headers[h];
     }
     res.writeHead(r.statusCode, out);

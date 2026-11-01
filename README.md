@@ -12,6 +12,18 @@ npm start
 
 Abre http://localhost:4200.
 
+### Desde GitHub Pages
+
+También puedes abrirla en https://saitamaeditor.github.io/extractorm3u8/. Si tienes `npm start` arrancado en tu PC, la página de Pages lo usa automáticamente como proxy y funciona todo, Emby incluido. La primera vez el navegador puede pedirte permiso para acceder a la red local: acéptalo.
+
+Sin el servidor arrancado, desde Pages solo funcionan los enlaces que permiten la descarga directa (CORS) y no se puede entrar en un Emby con dirección `http://`.
+
+Si publicas tu propia copia en otra dirección, arranca el servidor indicándola:
+
+```bash
+ALLOWED_ORIGINS=https://tu-usuario.github.io npm start
+```
+
 ## Funciones
 
 **Enlace M3U8**
