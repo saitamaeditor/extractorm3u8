@@ -25,12 +25,12 @@ const isLocalOrigin = (o) => {
   try { return LOCAL_HOST.test(new URL(o).host); } catch { return false; }
 };
 
-// Cabeceras de la página que se reenvían al servidor del vídeo (Emby usa X-Emby-*).
-const FORWARD = ['range', 'content-type', 'x-emby-authorization', 'x-emby-token'];
+// Cabeceras de la página que se reenvían al servidor del vídeo (Emby usa X-Emby-*, Jellyfin Authorization).
+const FORWARD = ['range', 'content-type', 'x-emby-authorization', 'x-emby-token', 'authorization'];
 
 function cors(req) {
   const h = {
-    'Access-Control-Allow-Headers': 'Range, Content-Type, X-Emby-Authorization, X-Emby-Token',
+    'Access-Control-Allow-Headers': 'Range, Content-Type, X-Emby-Authorization, X-Emby-Token, Authorization',
     'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
     'Access-Control-Expose-Headers': 'Content-Length, Content-Range, Content-Type, Content-Disposition, X-Final-Url',
     'Vary': 'Origin',

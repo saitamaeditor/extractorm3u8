@@ -92,25 +92,35 @@
 
   <nav class="tabs">
     <button class="tab active" data-tab="m3u8">Enlace M3U8</button>
-    <button class="tab" data-tab="emby">Emby</button>
+    <button class="tab" data-tab="emby">Emby / Jellyfin</button>
   </nav>
 
   <section id="tab-emby" class="card hidden">
     <div id="embyLogin">
-      <label for="eServer">Servidor Emby</label>
-      <input id="eServer" type="url" placeholder="http://192.168.1.10:8096" autocomplete="url">
+      <div class="row" style="margin-top:0">
+        <div><label for="eServer">Dirección del servidor</label><input id="eServer" type="url" placeholder="http://192.168.1.10:8096" autocomplete="url"></div>
+        <div>
+          <label for="eKind">Tipo de servidor</label>
+          <select id="eKind">
+            <option value="auto" selected>Detectar automáticamente</option>
+            <option value="emby">Emby</option>
+            <option value="jellyfin">Jellyfin</option>
+          </select>
+        </div>
+      </div>
       <div class="row">
         <div><label for="eUser">Usuario</label><input id="eUser" autocomplete="username"></div>
         <div><label for="ePass">Contraseña</label><input id="ePass" type="password" autocomplete="current-password"></div>
       </div>
-      <div class="btns"><button id="eLogin" class="primary">Conectar</button></div>
+      <div class="btns"><button id="eLogin" class="primary">Conectar</button><button id="eCancelAdd" class="hidden">Volver a mis servidores</button></div>
       <p id="eMsg" class="info" style="margin:14px 0 0">La contraseña solo se envía a tu servidor; en este navegador se recuerda la sesión, no la contraseña.</p>
     </div>
     <div id="embyLib" class="hidden">
       <div class="ebar">
-        <span id="eWho" class="info"></span>
-        <button id="eLogout">Cerrar sesión</button>
+        <span class="langs" style="margin:0"><label>Servidor <select id="eServers"></select></label></span>
+        <span class="btns" style="margin:0"><button id="eAdd">Añadir servidor</button><button id="eLogout">Cerrar sesión</button></span>
       </div>
+      <p id="eWho" class="info" style="margin:8px 0 0"></p>
       <div class="row">
         <div><label for="eSearch">Buscar</label><input id="eSearch" type="search" placeholder="Película, serie o episodio"></div>
         <div>
@@ -283,8 +293,11 @@ function pickMode() {
 const authHosts = new Map();
 function addAuth(url) {
   try {
-    const u = new URL(url), token = authHosts.get(u.host);
-    if (token && !u.searchParams.has('api_key')) { u.searchParams.set('api_key', token); return u.href; }
+    const u = new URL(url), q = authHosts.get(u.host); // { api_key } en Emby, { ApiKey, api_key } en Jellyfin
+    if (q && !u.searchParams.has('api_key') && !u.searchParams.has('ApiKey')) {
+      for (const [k, v] of Object.entries(q)) u.searchParams.set(k, v);
+      return u.href;
+    }
   } catch {}
   return url;
 }
@@ -878,7 +891,12 @@ async function copyFfmpeg() {
 }
 
 // ---------- Emby ----------
-const E = { server: '', token: '', userId: '', user: '', canDownload: false, viaProxy: false, stack: [], renderId: 0, autoName: false };
+const E = { kind: 'emby', server: '', token: '', userId: '', user: '', canDownload: false, viaProxy: false, stack: [], renderId: 0, autoName: false, sessions: [] };
+// Jellyfin nació de Emby y comparte casi toda la API; cambian la cabecera de sesión, el nombre de la
+// clave en los enlaces (ApiKey) y algunas rutas del catálogo en sus versiones nuevas.
+const isJF = () => E.kind === 'jellyfin';
+const brand = (s = E) => (s.kind === 'jellyfin' ? 'Jellyfin' : 'Emby');
+const authQuery = (s = E) => (s.kind === 'jellyfin' ? { ApiKey: s.token, api_key: s.token } : { api_key: s.token });
 const store = {
   get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
   set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch {} },
@@ -887,18 +905,23 @@ const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => 
 const deviceId = store.get('embyDevice') || (() => { const id = rid(); store.set('embyDevice', id); return id; })();
 const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
 
-const embyAuth = () => `Emby UserId="${E.userId}", Client="Descargador M3U8", Device="Navegador", DeviceId="${deviceId}", Version="1.0.0"` + (E.token ? `, Token="${E.token}"` : '');
+const clientInfo = () => `Client="Descargador M3U8", Device="Navegador", DeviceId="${deviceId}", Version="1.0.0"` + (E.token ? `, Token="${E.token}"` : '');
+function authHeaders() {
+  if (isJF()) return { Authorization: 'MediaBrowser ' + clientInfo() }; // las versiones nuevas ya no aceptan X-Emby-*
+  const h = { 'X-Emby-Authorization': `Emby UserId="${E.userId}", ` + clientInfo() };
+  if (E.token) h['X-Emby-Token'] = E.token;
+  return h;
+}
 function embyUrl(path, params = {}) {
   const u = new URL(E.server + path);
   for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') u.searchParams.set(k, v);
   return u.href;
 }
 
-// Llama a la API de Emby: directo si el servidor lo permite (CORS); si no, por el proxy local.
+// Llama a la API de Emby/Jellyfin: directo si el servidor lo permite (CORS); si no, por el proxy local.
 async function emby(path, params, body, method) {
   const url = embyUrl(path, params);
-  const headers = { 'X-Emby-Authorization': embyAuth(), Accept: 'application/json' };
-  if (E.token) headers['X-Emby-Token'] = E.token;
+  const headers = { ...authHeaders(), Accept: 'application/json' };
   if (body) headers['Content-Type'] = 'application/json';
   const init = { method: method || (body ? 'POST' : 'GET'), headers, body: body ? JSON.stringify(body) : undefined };
   let r;
@@ -908,20 +931,40 @@ async function emby(path, params, body, method) {
       await proxyReady;
       if (!state.proxyOk) {
         throw new Error(location.protocol === 'https:' && url.startsWith('http:')
-          ? 'Esta página es https y tu Emby es http: el navegador no deja conectar directamente. ' + START_HINT[0].toUpperCase() + START_HINT.slice(1) + '.'
-          : 'No se puede conectar con el servidor Emby. Revisa la dirección o ' + START_HINT + '.');
+          ? `Esta página es https y tu servidor es http: el navegador no deja conectar directamente. ` + START_HINT[0].toUpperCase() + START_HINT.slice(1) + '.'
+          : 'No se puede conectar con el servidor. Revisa la dirección o ' + START_HINT + '.');
       }
       E.viaProxy = true;
     }
   }
   if (E.viaProxy) r = await fetch(viaProxy(url), init);
   if (r.status === 401 || r.status === 403) {
-    throw Object.assign(new Error(E.token ? 'La sesión de Emby ha caducado: vuelve a conectar.' : 'Usuario o contraseña incorrectos.'), { auth: !!E.token });
+    throw Object.assign(new Error(E.token ? `La sesión de ${brand()} ha caducado: vuelve a conectar.` : 'Usuario o contraseña incorrectos.'), { auth: !!E.token });
   }
-  if (r.status === 502) throw new Error('No se puede conectar con el servidor Emby: ' + (await r.text()));
-  if (!r.ok) throw Object.assign(new Error('Emby respondió HTTP ' + r.status), { status: r.status });
+  if (r.status === 502) throw new Error('No se puede conectar con el servidor: ' + (await r.text()));
+  if (!r.ok) throw Object.assign(new Error(`${brand()} respondió HTTP ${r.status}`), { status: r.status });
   const t = await r.text();
-  try { return t ? JSON.parse(t) : null; } catch { throw new Error('Eso no parece un servidor Emby (la respuesta no es JSON).'); }
+  try { return t ? JSON.parse(t) : null; } catch { throw new Error('Eso no parece un servidor Emby ni Jellyfin (la respuesta no es JSON).'); }
+}
+
+// Jellyfin 10.9+ mueve el catálogo de /Users/{id}/… a /Items?userId=…; se prueba la ruta nueva y,
+// si no existe (Jellyfin antiguo), la de siempre. Emby usa siempre la de siempre.
+async function userApi(newPath, oldPath, params = {}) {
+  if (!isJF()) return emby(oldPath, params);
+  try { return await emby(newPath, { ...params, userId: E.userId }); }
+  catch (e) { if (e.status === 404 || e.status === 405) return emby(oldPath, params); throw e; }
+}
+const userItems = (params) => userApi('/Items', `/Users/${E.userId}/Items`, params);
+
+// Emby y Jellyfin responden a /System/Info/Public sin iniciar sesión; Jellyfin dice su nombre.
+async function detectKind() {
+  try {
+    const info = await emby('/System/Info/Public');
+    return /jellyfin/i.test(info?.ProductName || '') ? 'jellyfin' : 'emby';
+  } catch (e) {
+    if (e.status) return 'emby'; // responde pero sin esa ruta: Emby antiguo
+    throw e; // no se puede conectar
+  }
 }
 
 function embyMsg(t, err) { $('eMsg').textContent = t; $('eMsg').style.color = err ? 'var(--err)' : ''; }
@@ -931,58 +974,91 @@ async function embyLogin() {
   if (!server) return $('eServer').focus();
   if (!/^https?:\/\//i.test(server)) server = 'http://' + server;
   try { new URL(server); } catch { return embyMsg('La dirección del servidor no es válida.', true); }
-  Object.assign(E, { server, token: '', userId: '', viaProxy: false });
+  const prev = { ...E };
+  Object.assign(E, { kind: 'emby', server, token: '', userId: '', viaProxy: false });
   $('eLogin').disabled = true; embyMsg('Conectando…');
   const creds = { Username: $('eUser').value.trim(), Pw: $('ePass').value };
   try {
+    E.kind = $('eKind').value === 'auto' ? await detectKind() : $('eKind').value;
     let res;
     try { res = await emby('/Users/AuthenticateByName', null, creds); }
     catch (e) {
-      // Algunas instalaciones solo responden bajo /emby
-      if (e.status !== 404 || /\/emby$/i.test(server)) throw e;
+      // Algunas instalaciones de Emby solo responden bajo /emby
+      if (isJF() || e.status !== 404 || /\/emby$/i.test(server)) throw e;
       E.server = server += '/emby';
       res = await emby('/Users/AuthenticateByName', null, creds);
     }
-    if (!res?.AccessToken || !res.User) throw new Error('Eso no parece un servidor Emby.');
+    if (!res?.AccessToken || !res.User) throw new Error('Eso no parece un servidor Emby ni Jellyfin.');
     $('ePass').value = '';
-    setSession({ server, token: res.AccessToken, userId: res.User.Id, user: res.User.Name,
+    setSession({ kind: E.kind, server, token: res.AccessToken, userId: res.User.Id, user: res.User.Name,
       canDownload: res.User.Policy?.EnableContentDownloading !== false, viaProxy: E.viaProxy });
     embyHome();
-  } catch (e) { embyMsg(e.message, true); }
-  finally { $('eLogin').disabled = false; }
+  } catch (e) {
+    embyMsg(e.message, true);
+    if (prev.token) Object.assign(E, prev); // al añadir otro servidor, si falla, sigue el que había
+  } finally { $('eLogin').disabled = false; }
 }
 
+// Servidores guardados: se puede tener varios (Emby y Jellyfin) y cambiar entre ellos.
+const sessKey = (s) => `${s.kind}|${s.server}|${s.userId}`;
+function renderServers() {
+  $('eServers').replaceChildren(...E.sessions.map((s) => new Option(`${s.user} · ${new URL(s.server).host} · ${brand(s)}`, sessKey(s))));
+  $('eServers').value = sessKey(E);
+}
 function setSession(s) {
-  Object.assign(E, s);
-  authHosts.set(new URL(s.server).host, s.token);
-  store.set('embySession', s);
+  if (E.token && sessKey(E) !== sessKey(s)) { // otro servidor: lo elegido en el anterior no vale aquí
+    E.selected.clear(); E.choices.clear(); E.libState = {};
+    if (E.activeStream) embyStopStream(E.activeStream);
+    updateSel();
+  }
+  Object.assign(E, { stack: [] }, s);
+  authHosts.set(new URL(s.server).host, authQuery(s));
+  const i = E.sessions.findIndex((x) => sessKey(x) === sessKey(s));
+  if (i >= 0) E.sessions[i] = s; else E.sessions.push(s);
+  store.set('embySessions', E.sessions);
+  store.set('embyCurrent', sessKey(s));
   store.set('embyLast', { server: s.server, user: s.user });
-  $('eWho').textContent = `Conectado a ${new URL(s.server).host} como ${s.user}` + (s.canDownload ? '' : ' (sin permiso de descarga directa)');
-  $('embyLogin').classList.add('hidden'); $('embyLib').classList.remove('hidden');
+  renderServers();
+  $('eWho').textContent = `Conectado a ${brand()} en ${new URL(s.server).host} como ${s.user}` + (s.canDownload ? '' : ' (sin permiso de descarga directa)');
+  $('embyLogin').classList.add('hidden'); $('embyLib').classList.remove('hidden'); $('eCancelAdd').classList.add('hidden');
 }
 
+// Cierra la sesión del servidor actual; si hay otros guardados, pasa al siguiente.
 function embyLogout(msg) {
   if (E.token && !msg) emby('/Sessions/Logout', null, {}).catch(() => {});
   try { authHosts.delete(new URL(E.server).host); } catch {}
+  E.sessions = E.sessions.filter((x) => sessKey(x) !== sessKey(E));
+  store.set('embySessions', E.sessions);
   Object.assign(E, { token: '', userId: '', stack: [] });
-  store.set('embySession', null);
+  if (E.sessions.length) {
+    setSession(E.sessions[0]); embyHome();
+    if (msg) alert(msg);
+    return;
+  }
+  store.set('embyCurrent', null);
   $('embyLib').classList.add('hidden'); $('embyLogin').classList.remove('hidden');
   embyMsg(msg || 'Sesión cerrada.', !!msg);
+}
+function showAddServer() {
+  $('eServer').value = ''; $('eUser').value = ''; $('ePass').value = ''; $('eKind').value = 'auto';
+  $('embyLib').classList.add('hidden'); $('embyLogin').classList.remove('hidden'); $('eCancelAdd').classList.remove('hidden');
+  embyMsg('Añade otro servidor Emby o Jellyfin; los que ya tienes siguen guardados.');
+  $('eServer').focus();
 }
 
 const FIELDS = 'MediaSources,MediaStreams,ProductionYear,RunTimeTicks,ChildCount';
 const PAGE = 100; // títulos por página: las bibliotecas grandes se cargan al ir bajando
 const LATEST = {
   Id: '__latest', Name: 'Recién añadidas', Type: 'Folder', IsFolder: true, _meta: 'Películas y episodios nuevos en el servidor',
-  _open: () => ({ title: 'Recién añadidas', load: async () => ({ Items: await emby(`/Users/${E.userId}/Items/Latest`, { Limit: 60, Fields: FIELDS, IncludeItemTypes: 'Movie,Episode', GroupItems: false }) || [] }) }),
+  _open: () => ({ title: 'Recién añadidas', load: async () => ({ Items: await userApi('/Items/Latest', `/Users/${E.userId}/Items/Latest`, { Limit: 60, Fields: FIELDS, IncludeItemTypes: 'Movie,Episode', GroupItems: false }) || [] }) }),
 };
 function embyHome() {
   E.stack = []; $('eSearch').value = '';
-  embyOpen({ title: 'Bibliotecas', load: async () => ({ Items: [LATEST, ...((await emby(`/Users/${E.userId}/Views`))?.Items || [])] }) });
+  embyOpen({ title: 'Bibliotecas', load: async () => ({ Items: [LATEST, ...((await userApi('/UserViews', `/Users/${E.userId}/Views`))?.Items || [])] }) });
 }
 function embyOpen(view) { E.stack.push(view); renderView(); }
 function embyBack() { if (E.stack.length > 1) { const v = E.stack.pop(); if (v.search) $('eSearch').value = ''; renderView(); } }
-const children = (it, start = 0) => emby(`/Users/${E.userId}/Items`, {
+const children = (it, start = 0) => userItems({
   ParentId: it.Id, Fields: FIELDS, StartIndex: start, Limit: PAGE, SortOrder: 'Ascending',
   SortBy: it.Type === 'Series' || it.Type === 'Season' ? 'ParentIndexNumber,IndexNumber,SortName' : 'SortName',
 });
@@ -998,7 +1074,7 @@ function viewFor(it) {
     const view = { title: it.Name, lib: it, type, paged: true, ...(E.libState[it.Id] ||= { sort: 'SortName|Ascending', genre: '' }) };
     view.load = (start) => {
       const [SortBy, SortOrder] = view.sort.split('|');
-      return emby(`/Users/${E.userId}/Items`, { ParentId: it.Id, Recursive: true, IncludeItemTypes: type, Fields: FIELDS, StartIndex: start, Limit: PAGE, SortBy, SortOrder, Genres: view.genre });
+      return userItems({ ParentId: it.Id, Recursive: true, IncludeItemTypes: type, Fields: FIELDS, StartIndex: start, Limit: PAGE, SortBy, SortOrder, Genres: view.genre });
     };
     return view;
   }
@@ -1126,7 +1202,7 @@ function renderItem(it) {
   const img = el('img', 'thumb'); img.alt = ''; img.loading = 'lazy';
   const tag = it.ImageTags?.Primary, imgId = tag ? it.Id : it.SeriesId, imgTag = tag || it.SeriesPrimaryImageTag;
   if (imgId && imgTag) {
-    const src = embyUrl(`/Items/${imgId}/Images/Primary`, { maxHeight: 160, tag: imgTag, api_key: E.token });
+    const src = embyUrl(`/Items/${imgId}/Images/Primary`, { maxHeight: 160, tag: imgTag, ...authQuery() });
     img.src = E.viaProxy && state.proxyOk ? viaProxy(src) : src; // una página https no puede cargar imágenes http
   }
   img.onerror = () => img.removeAttribute('src');
@@ -1233,7 +1309,7 @@ function saveBlob(blob, name) {
 }
 async function downloadSrt(it, s, btn) {
   if (!s) return;
-  const url = embyUrl(`/Videos/${it.Id}/${msOf(it).Id}/Subtitles/${s.Index}/Stream.srt`, { api_key: E.token });
+  const url = embyUrl(`/Videos/${it.Id}/${msOf(it).Id}/Subtitles/${s.Index}/Stream.srt`, { ...authQuery() });
   btn.disabled = true; btn.textContent = 'Bajando…';
   try {
     const bytes = await fetchBytes(url);
@@ -1303,23 +1379,25 @@ function deviceProfile(rate, width, burnSubs) {
   };
 }
 const PB_ERRORS = {
-  NotAllowed: 'Tu usuario de Emby no tiene permiso para reproducir o convertir este vídeo.',
-  NoCompatibleStream: 'Emby no encuentra una forma de enviar este vídeo en un formato compatible.',
-  RateLimitExceeded: 'El servidor Emby está al límite de conversiones a la vez; prueba dentro de un rato.',
+  NotAllowed: 'Tu usuario no tiene permiso en este servidor para reproducir o convertir este vídeo.',
+  NoCompatibleStream: 'El servidor no encuentra una forma de enviar este vídeo en un formato compatible.',
+  RateLimitExceeded: 'El servidor está al límite de conversiones a la vez; prueba dentro de un rato.',
 };
 
 // Pide el stream como las apps oficiales (PlaybackInfo): Emby devuelve el enlace exacto que quiere servir.
 // Si el servidor no responde a eso (versiones antiguas, servidores raros), se usa el enlace montado a mano.
 async function requestEmbyStream(it) {
   const rate = +$('eRate').value, ms = msOf(it), { audio, sub } = trackChoice(it);
+  // Emby lee las opciones de la dirección y Jellyfin (versiones nuevas) del cuerpo: se mandan en los dos sitios.
+  const opts = {
+    UserId: E.userId, StartTimeTicks: 0, IsPlayback: true, AutoOpenLiveStream: true, MaxStreamingBitrate: rate,
+    MediaSourceId: ms?.Id, AudioStreamIndex: audio, SubtitleStreamIndex: sub >= 0 ? sub : -1, DeviceId: deviceId,
+    EnableDirectPlay: false, EnableDirectStream: false, EnableTranscoding: true,
+    AllowVideoStreamCopy: rate >= 20000000 && sub < 0, AllowAudioStreamCopy: true,
+  };
   try {
-    const info = await emby(`/Items/${it.Id}/PlaybackInfo`, {
-      UserId: E.userId, StartTimeTicks: 0, IsPlayback: 'true', AutoOpenLiveStream: 'true', MaxStreamingBitrate: rate,
-      MediaSourceId: ms?.Id, AudioStreamIndex: audio, SubtitleStreamIndex: sub >= 0 ? sub : -1, DeviceId: deviceId,
-      EnableDirectPlay: 'false', EnableDirectStream: 'false', EnableTranscoding: 'true',
-      AllowVideoStreamCopy: rate >= 20000000 && sub < 0 ? 'true' : 'false', AllowAudioStreamCopy: 'true',
-    }, { DeviceProfile: deviceProfile(rate, maxWidth(rate), sub >= 0) });
-    if (info?.ErrorCode) throw Object.assign(new Error(PB_ERRORS[info.ErrorCode] || 'Emby no puede enviar este vídeo: ' + info.ErrorCode), { fatal: true });
+    const info = await emby(`/Items/${it.Id}/PlaybackInfo`, opts, { ...opts, DeviceProfile: deviceProfile(rate, maxWidth(rate), sub >= 0) });
+    if (info?.ErrorCode) throw Object.assign(new Error(PB_ERRORS[info.ErrorCode] || `${brand()} no puede enviar este vídeo: ${info.ErrorCode}`), { fatal: true });
     const src = (info?.MediaSources || []).find((m) => m.Id === ms?.Id) || info?.MediaSources?.[0];
     let t = src?.TranscodingUrl;
     if (t) {
@@ -1351,7 +1429,7 @@ function m3u8Url(it, playSessionId = rid()) {
   const rate = +$('eRate').value, ms = msOf(it), { audio, sub } = trackChoice(it);
   const width = maxWidth(rate);
   return embyUrl(`/Videos/${it.Id}/master.m3u8`, {
-    MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: playSessionId, api_key: E.token,
+    MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: playSessionId, ...authQuery(),
     VideoCodec: 'h264', AudioCodec: 'aac', VideoBitrate: rate - 192000, AudioBitrate: 192000, MaxWidth: width,
     TranscodingMaxAudioChannels: 2, SegmentContainer: 'ts', MinSegments: 1, BreakOnNonKeyFrames: 'True',
     AudioStreamIndex: audio,
@@ -1372,8 +1450,8 @@ async function findOriginal(it) {
   if (!E.canDownload) return null;
   const ms = msOf(it), msId = ms?.Id, ext = (ms?.Container || '').split(',')[0];
   const candidates = [
-    embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token, MediaSourceId: sources(it).length > 1 ? msId : null }),
-    embyUrl(`/Videos/${it.Id}/stream${ext ? '.' + ext : ''}`, { Static: 'true', MediaSourceId: msId, api_key: E.token }),
+    embyUrl(`/Items/${it.Id}/Download`, { ...authQuery(), MediaSourceId: sources(it).length > 1 ? msId : null }),
+    embyUrl(`/Videos/${it.Id}/stream${ext ? '.' + ext : ''}`, { Static: 'true', MediaSourceId: msId, ...authQuery() }),
   ];
   for (const u of candidates) {
     try {
@@ -1394,13 +1472,13 @@ function itemButtons(it) {
   const box = el('div', 'btns');
   const orig = el('button', 'primary', 'Descargar original');
   orig.title = 'El archivo tal cual: incluye todos sus idiomas y subtítulos';
-  if (!E.canDownload) { orig.disabled = true; orig.title = 'Tu usuario de Emby no tiene permiso para descargar: usa «Bajar como M3U8»'; }
+  if (!E.canDownload) { orig.disabled = true; orig.title = `Tu usuario de ${brand()} no tiene permiso para descargar: usa «Bajar como M3U8»`; }
   orig.onclick = async () => {
     orig.disabled = true; orig.textContent = 'Comprobando…';
     try {
       const url = await findOriginal(it);
       if (!url) {
-        if (confirm('Tu servidor Emby no encuentra el archivo original de este vídeo (no está en la ruta que tiene apuntada).\n\n¿Lo bajo por M3U8?')) viaHls.click();
+        if (confirm(`Tu servidor ${brand()} no encuentra el archivo original de este vídeo (no está en la ruta que tiene apuntada).\n\n¿Lo bajo por M3U8?`)) viaHls.click();
         return;
       }
       const a = document.createElement('a');
@@ -1496,7 +1574,7 @@ $('eSearch').addEventListener('input', () => {
     const q = $('eSearch').value.trim();
     while (E.stack.length > 1 && E.stack[E.stack.length - 1].search) E.stack.pop();
     if (!q) return renderView();
-    embyOpen({ title: `Resultados de «${q}»`, search: true, load: () => emby(`/Users/${E.userId}/Items`, {
+    embyOpen({ title: `Resultados de «${q}»`, search: true, load: () => userItems({
       Recursive: true, SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode,Video,MusicVideo', Fields: FIELDS, Limit: 100,
     }) });
   }, 350);
@@ -1505,6 +1583,12 @@ $('eLogin').onclick = embyLogin;
 $('ePass').addEventListener('keydown', (e) => { if (e.key === 'Enter') embyLogin(); });
 $('eLogout').onclick = () => embyLogout();
 $('eBack').onclick = embyBack;
+$('eAdd').onclick = showAddServer;
+$('eCancelAdd').onclick = () => { if (E.token) setSession(E.sessions.find((x) => sessKey(x) === sessKey(E)) || E.sessions[0]); };
+$('eServers').onchange = () => {
+  const s = E.sessions.find((x) => sessKey(x) === $('eServers').value);
+  if (s && sessKey(s) !== sessKey(E)) { $('eSearch').value = ''; setSession(s); embyHome(); }
+};
 
 function showTab(t) {
   document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
@@ -1516,8 +1600,13 @@ document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.da
 
 const last = store.get('embyLast');
 if (last) { $('eServer').value = last.server || ''; $('eUser').value = last.user || ''; }
-const saved = store.get('embySession');
-if (saved?.token) { setSession(saved); embyHome(); }
+// Servidores guardados (la versión anterior guardaba uno solo de Emby: se conserva).
+const old = store.get('embySession');
+E.sessions = store.get('embySessions') || (old?.token ? [{ kind: 'emby', ...old }] : []);
+store.set('embySession', null);
+for (const s of E.sessions) authHosts.set(new URL(s.server).host, authQuery(s));
+const current = E.sessions.find((s) => sessKey(s) === store.get('embyCurrent')) || E.sessions[0];
+if (current) { setSession(current); embyHome(); }
 if (store.get('tab') === 'emby') showTab('emby');
 
 if (!window.showSaveFilePicker) $('diskRow').classList.add('hidden');

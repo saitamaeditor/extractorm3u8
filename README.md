@@ -1,6 +1,6 @@
 # Extractor M3U8
 
-Web local para descargar vídeos HLS (`.m3u8`) y guardarlos como MP4, con una pestaña para entrar en tu servidor Emby, ver el catálogo y descargar lo que elijas.
+Web local para descargar vídeos HLS (`.m3u8`) y guardarlos como MP4, con una pestaña para entrar en tus servidores Emby o Jellyfin, ver el catálogo y descargar lo que elijas.
 
 ## Uso
 
@@ -34,8 +34,9 @@ ALLOWED_ORIGINS=https://tu-usuario.github.io npm start
 - Opción de guardar directamente en disco para vídeos largos.
 - Vista previa y botón para copiar el comando de ffmpeg equivalente.
 
-**Emby**
-- Inicias sesión con la dirección del servidor, tu usuario y tu contraseña.
+**Emby / Jellyfin**
+- Inicias sesión con la dirección del servidor, tu usuario y tu contraseña; el tipo de servidor se detecta solo.
+- Puedes guardar varios servidores (Emby y Jellyfin) y cambiar entre ellos.
 - Navegas por bibliotecas, series y temporadas, o usas el buscador.
 - Eliges el idioma de audio y los subtítulos de cada vídeo, o unos preferidos para toda la lista.
 - Descargas el archivo original (si tu usuario tiene permiso) o el vídeo por M3U8.
