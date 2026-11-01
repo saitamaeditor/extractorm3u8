@@ -1,0 +1,1136 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Descargador M3U8</title>
+<style>
+  :root {
+    --bg: #f5f6f8; --card: #ffffff; --text: #16181d; --muted: #6a7180; --line: #e2e5ea;
+    --accent: #2f6df6; --accent-text: #ffffff; --ok: #15905a; --err: #c9353b; --warn: #b7791f;
+    --input: #ffffff; --track: #e7eaf0;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f1115; --card: #181b21; --text: #e9ebef; --muted: #8b93a3; --line: #2a2f38;
+      --accent: #5b8cff; --accent-text: #0b0d12; --ok: #3ccf8e; --err: #ff6b70; --warn: #f0b44c;
+      --input: #12151a; --track: #262b34;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  main { max-width: 760px; margin: 0 auto; padding: 32px 16px 64px; }
+  h1 { font-size: 26px; margin: 0 0 4px; letter-spacing: -0.02em; }
+  .sub { color: var(--muted); margin: 0 0 24px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 20px; margin-bottom: 16px; }
+  label { display: block; font-size: 13px; font-weight: 600; margin: 0 0 6px; }
+  input, select {
+    width: 100%; padding: 10px 12px; border-radius: 9px; border: 1px solid var(--line);
+    background: var(--input); color: var(--text); font: inherit;
+  }
+  input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
+  .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
+  @media (max-width: 560px) { .row { grid-template-columns: 1fr; } }
+  details { margin-top: 14px; }
+  summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+  .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 18px; }
+  button {
+    border: 1px solid var(--line); background: var(--card); color: var(--text);
+    padding: 10px 16px; border-radius: 9px; font: inherit; font-weight: 600; cursor: pointer;
+  }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: not-allowed; }
+  .check { display: flex; align-items: center; gap: 8px; margin-top: 14px; font-size: 14px; }
+  .check input { width: auto; }
+  .bar { height: 10px; background: var(--track); border-radius: 99px; overflow: hidden; margin: 12px 0 8px; }
+  .bar > div { height: 100%; width: 0; background: var(--accent); transition: width .2s; }
+  .stats { display: flex; gap: 16px; flex-wrap: wrap; color: var(--muted); font-size: 13px; font-variant-numeric: tabular-nums; }
+  .log { margin-top: 12px; font: 12.5px/1.5 ui-monospace, Consolas, monospace; color: var(--muted); max-height: 180px; overflow: auto; white-space: pre-wrap; word-break: break-all; }
+  .log .err { color: var(--err); } .log .ok { color: var(--ok); } .log .warn { color: var(--warn); }
+  .info { font-size: 14px; color: var(--muted); }
+  .info b { color: var(--text); font-weight: 600; }
+  video { width: 100%; border-radius: 10px; background: #000; margin-top: 12px; display: none; }
+  code { font: 12.5px ui-monospace, Consolas, monospace; background: var(--track); padding: 2px 6px; border-radius: 5px; word-break: break-all; }
+  .hidden { display: none !important; }
+  .tabs { display: flex; gap: 4px; background: var(--track); padding: 4px; border-radius: 11px; margin-bottom: 16px; width: fit-content; }
+  .tab { border: 0; background: transparent; color: var(--muted); padding: 8px 16px; }
+  .tab.active { background: var(--card); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.08); }
+  .ebar { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .crumb { display: flex; align-items: center; gap: 8px; margin: 16px 0 8px; font-size: 14px; color: var(--muted); min-height: 36px; }
+  .crumb button { padding: 6px 12px; }
+  .elist { display: flex; flex-direction: column; gap: 8px; }
+  .item { display: grid; grid-template-columns: 54px 1fr; gap: 12px; padding: 10px; border: 1px solid var(--line); border-radius: 11px; align-items: center; }
+  .item.folder { cursor: pointer; }
+  .item.folder:hover { border-color: var(--accent); }
+  .thumb { width: 54px; height: 80px; border-radius: 7px; background: var(--track); object-fit: cover; display: block; }
+  .item .t { font-weight: 600; overflow-wrap: anywhere; }
+  .item .m { font-size: 13px; color: var(--muted); }
+  .item .btns { margin-top: 8px; gap: 6px; }
+  .item .btns button { padding: 6px 11px; font-size: 13px; }
+  .empty { color: var(--muted); font-size: 14px; padding: 12px 0; }
+  .qbar { position: sticky; top: 8px; z-index: 2; background: var(--card); border: 1px solid var(--accent); border-radius: 11px; padding: 10px 12px; margin-top: 16px; }
+  .item.sel { border-color: var(--accent); }
+  .item .pick { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; margin: 0 0 0 4px; cursor: pointer; }
+  .item .pick input { width: auto; }
+  .langs { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 8px; }
+  .langs label { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; }
+  .langs select { width: auto; max-width: 260px; padding: 5px 8px; font-size: 13px; }
+  .pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 99px; background: var(--track); color: var(--muted); margin-left: 6px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Descargador M3U8</h1>
+  <p class="sub">Pega el enlace de un stream HLS (.m3u8), o entra en tu servidor Emby, y guarda el vídeo como MP4.</p>
+
+  <nav class="tabs">
+    <button class="tab active" data-tab="m3u8">Enlace M3U8</button>
+    <button class="tab" data-tab="emby">Emby</button>
+  </nav>
+
+  <section id="tab-emby" class="card hidden">
+    <div id="embyLogin">
+      <label for="eServer">Servidor Emby</label>
+      <input id="eServer" type="url" placeholder="http://192.168.1.10:8096" autocomplete="url">
+      <div class="row">
+        <div><label for="eUser">Usuario</label><input id="eUser" autocomplete="username"></div>
+        <div><label for="ePass">Contraseña</label><input id="ePass" type="password" autocomplete="current-password"></div>
+      </div>
+      <div class="btns"><button id="eLogin" class="primary">Conectar</button></div>
+      <p id="eMsg" class="info" style="margin:14px 0 0">La contraseña solo se envía a tu servidor; en este navegador se recuerda la sesión, no la contraseña.</p>
+    </div>
+    <div id="embyLib" class="hidden">
+      <div class="ebar">
+        <span id="eWho" class="info"></span>
+        <button id="eLogout">Cerrar sesión</button>
+      </div>
+      <div class="row">
+        <div><label for="eSearch">Buscar</label><input id="eSearch" type="search" placeholder="Película, serie o episodio"></div>
+        <div>
+          <label for="eRate">Calidad del M3U8</label>
+          <select id="eRate">
+            <option value="120000000">Máxima (sin recodificar si se puede)</option>
+            <option value="20000000">1080p · 20 Mbps</option>
+            <option value="8000000" selected>1080p · 8 Mbps</option>
+            <option value="4000000">720p · 4 Mbps</option>
+            <option value="1500000">480p · 1,5 Mbps</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="eAudioPref">Idioma de audio preferido</label>
+          <select id="eAudioPref"><option value="">El predeterminado de cada vídeo</option></select>
+        </div>
+        <div>
+          <label for="eSubPref">Subtítulos preferidos (se incrustan en la imagen)</label>
+          <select id="eSubPref"><option value="">Sin subtítulos</option></select>
+        </div>
+      </div>
+      <div id="eQueueBar" class="ebar qbar hidden">
+        <span id="eSelCount" class="info"></span>
+        <span class="btns" style="margin:0">
+          <button id="eQueueGo" class="primary">Descargar seleccionados</button>
+          <button id="eSelClear">Quitar selección</button>
+        </span>
+      </div>
+      <div class="crumb"><button id="eBack" class="hidden">← Atrás</button><span id="eTitle"></span><button id="eSelAll" class="hidden" style="margin-left:auto">Seleccionar todo</button></div>
+      <div id="eList" class="elist"></div>
+    </div>
+  </section>
+
+  <section id="tab-m3u8" class="card">
+    <label for="url">Enlace .m3u8</label>
+    <input id="url" type="url" placeholder="https://ejemplo.com/video/master.m3u8" autocomplete="off">
+
+    <details>
+      <summary>Opciones avanzadas</summary>
+      <div class="row">
+        <div>
+          <label for="referer">Referer (si el servidor lo exige)</label>
+          <input id="referer" type="url" placeholder="https://web-del-video.com/">
+        </div>
+        <div>
+          <label for="conc">Descargas simultáneas</label>
+          <select id="conc">
+            <option>4</option><option>8</option><option selected>16</option><option>24</option><option>32</option>
+          </select>
+        </div>
+      </div>
+      <div class="row">
+        <div>
+          <label for="name">Nombre del archivo</label>
+          <input id="name" placeholder="video">
+        </div>
+        <div>
+          <label for="mode">Conexión</label>
+          <select id="mode">
+            <option value="auto" selected>Automática</option>
+            <option value="direct">Directa</option>
+            <option value="proxy">Siempre por proxy local</option>
+          </select>
+        </div>
+      </div>
+      <label class="check"><input id="tomp4" type="checkbox" checked> Convertir a MP4 (si el stream es .ts)</label>
+      <label class="check" id="diskRow"><input id="todisk" type="checkbox"> Guardar directamente en disco: para vídeos largos, usa poca memoria (no convierte .ts a MP4)</label>
+    </details>
+
+    <div class="btns">
+      <button id="analyze" class="primary">Analizar</button>
+      <button id="ffmpeg">Copiar comando ffmpeg</button>
+    </div>
+    <p id="proxyState" class="info" style="margin:14px 0 0"></p>
+  </section>
+
+  <section id="pick" class="card hidden">
+    <div id="summary" class="info"></div>
+    <div id="variantBox" style="margin-top:14px">
+      <label for="variant">Calidad</label>
+      <select id="variant"></select>
+    </div>
+    <div class="btns">
+      <button id="download" class="primary">Descargar</button>
+      <button id="preview">Vista previa</button>
+      <button id="cancel" class="hidden">Cancelar</button>
+    </div>
+    <video id="player" controls playsinline></video>
+  </section>
+
+  <section id="progress" class="card hidden">
+    <div class="info" id="status">Preparando…</div>
+    <div class="bar"><div id="fill"></div></div>
+    <div class="stats">
+      <span id="sSeg">0 / 0 fragmentos</span>
+      <span id="sBytes">0 MB</span>
+      <span id="sSpeed">0 MB/s</span>
+      <span id="sEta"></span>
+    </div>
+    <div class="log" id="log"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const state = {
+  mode: 'direct', proxyOk: false, shards: 0, warnedFallback: false,
+  master: null, masterLine: '', media: null, mediaUrl: null, resolved: new Map(), abort: null, hls: null,
+};
+
+// ---------- red ----------
+// El navegador solo abre 6 conexiones por dirección; repartir las peticiones al
+// proxy entre s0.localhost, s1.localhost… multiplica las descargas simultáneas.
+const SHARDS = 8;
+const shardBase = (n) => `${location.protocol}//s${n}.localhost:${location.port}`;
+const proxify = (u, shard) => {
+  const q = new URLSearchParams({ url: u });
+  const ref = $('referer').value.trim();
+  if (ref) { q.set('referer', ref); try { q.set('origin', new URL(ref).origin); } catch {} }
+  return (shard != null && state.shards ? shardBase(shard % state.shards) : '') + '/proxy?' + q;
+};
+
+async function checkProxy() {
+  try { state.proxyOk = location.protocol.startsWith('http') && (await fetch('/health')).ok; }
+  catch { state.proxyOk = false; }
+  if (state.proxyOk && /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname)) {
+    try { state.shards = (await fetch(shardBase(1) + '/health')).ok ? SHARDS : 0; } catch { state.shards = 0; }
+  }
+  $('proxyState').textContent = state.proxyOk
+    ? 'Proxy local activo: se usará si el servidor del vídeo bloquea la descarga directa (CORS).'
+    : 'Sin proxy local: abre la página con «node server.js» para descargar vídeos que bloquean CORS o piden Referer.';
+}
+const proxyReady = checkProxy();
+
+function pickMode() {
+  const m = $('mode').value;
+  if (m === 'proxy' || $('referer').value.trim()) {
+    if (!state.proxyOk) throw new Error('El Referer y el modo proxy necesitan el proxy local: abre la página con «node server.js»');
+    return 'proxy';
+  }
+  return m === 'direct' ? 'direct' : null; // null = probar directa y caer al proxy
+}
+
+// Los fragmentos HLS de Emby no siempre llevan la clave de sesión: se añade a todo lo de ese servidor.
+const authHosts = new Map();
+function addAuth(url) {
+  try {
+    const u = new URL(url), token = authHosts.get(u.host);
+    if (token && !u.searchParams.has('api_key')) { u.searchParams.set('api_key', token); return u.href; }
+  } catch {}
+  return url;
+}
+
+async function rawFetch(url, mode, opts = {}) {
+  url = addAuth(url);
+  const headers = {};
+  if (opts.range) headers.Range = `bytes=${opts.range[0]}-${opts.range[1]}`;
+  const r = await fetch(mode === 'proxy' ? proxify(url, opts.shard) : url, { headers, signal: opts.signal });
+  if (!r.ok) {
+    const e = new Error(r.status === 401 || r.status === 403
+      ? `HTTP ${r.status}: el servidor rechaza la petición (prueba a poner en Referer la web donde está el vídeo)`
+      : `HTTP ${r.status}`);
+    e.status = r.status;
+    throw e;
+  }
+  return r;
+}
+
+async function get(url, opts = {}) {
+  await proxyReady;
+  const forced = pickMode();
+  if (forced) state.mode = forced;
+  try {
+    return await rawFetch(url, state.mode, opts);
+  } catch (e) {
+    if (e.name === 'AbortError') throw e;
+    if (!forced && state.mode === 'direct' && state.proxyOk && e instanceof TypeError) {
+      if (!state.warnedFallback) log('La conexión directa está bloqueada (CORS), uso el proxy local.', 'warn');
+      state.warnedFallback = true;
+      state.mode = 'proxy';
+      return rawFetch(url, 'proxy', opts);
+    }
+    if (e instanceof TypeError) throw new Error('Bloqueado por CORS o sin conexión' + (state.proxyOk ? '' : ' (arranca server.js para usar el proxy)'));
+    throw e;
+  }
+}
+
+// Descarga un recurso entero; si el servidor ignora el Range y manda el archivo completo, recorta el trozo.
+async function fetchBytes(url, opts = {}) {
+  const r = await get(url, opts);
+  const b = new Uint8Array(await r.arrayBuffer());
+  return opts.range && r.status === 200 ? b.slice(opts.range[0], opts.range[1] + 1) : b;
+}
+
+async function getText(url) {
+  const r = await get(url);
+  const viaProxy = r.url.includes('/proxy?');
+  return { text: await r.text(), finalUrl: r.headers.get('X-Final-Url') || (!viaProxy && r.url) || url };
+}
+
+// ---------- parser ----------
+function attrs(s) {
+  const o = {};
+  for (const m of s.matchAll(/([A-Z0-9-]+)=("[^"]*"|[^,]*)/g)) o[m[1]] = m[2].replace(/^"|"$/g, '');
+  return o;
+}
+const abs = (u, base) => new URL(u, base).href;
+
+function parse(text, base) {
+  const lines = text.replace(/^﻿/, '').split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  if (!lines[0] || !lines[0].startsWith('#EXTM3U')) throw new Error('No es una lista M3U8 válida (¿has copiado el enlace correcto?)');
+
+  if (text.includes('#EXT-X-STREAM-INF')) {
+    const variants = [], audio = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.startsWith('#EXT-X-STREAM-INF:')) {
+        const a = attrs(l.slice(18));
+        let j = i + 1; while (j < lines.length && lines[j].startsWith('#')) j++;
+        if (lines[j]) variants.push({ bw: +a.BANDWIDTH || 0, res: a.RESOLUTION || '', codecs: a.CODECS || '', audio: a.AUDIO, url: abs(lines[j], base) });
+        i = j;
+      } else if (l.startsWith('#EXT-X-MEDIA:')) {
+        const a = attrs(l.slice(13));
+        if (a.TYPE === 'AUDIO' && a.URI) audio.push({ name: a.NAME || a.LANGUAGE || 'audio', lang: a.LANGUAGE || '', group: a['GROUP-ID'], url: abs(a.URI, base) });
+      }
+    }
+    variants.sort((a, b) => b.bw - a.bw);
+    return { type: 'master', variants, audio };
+  }
+
+  const segs = [];
+  let seq = 0, key = null, map = null, dur = 0, endlist = false, br = null, disc = 0, drm = false;
+  const lastEnd = {};
+  for (const l of lines) {
+    if (l.startsWith('#EXT-X-MEDIA-SEQUENCE:')) seq = parseInt(l.slice(22), 10) || 0;
+    else if (l.startsWith('#EXT-X-KEY:')) {
+      const a = attrs(l.slice(11));
+      // Claves de DRM (Widevine, FairPlay…) conviven a veces con la normal: solo vale «identity».
+      if (a.KEYFORMAT && a.KEYFORMAT !== 'identity') { if (a.METHOD !== 'NONE') drm = true; continue; }
+      key = a.METHOD === 'NONE' ? null : { method: a.METHOD, uri: a.URI ? abs(a.URI, base) : null, iv: a.IV || null };
+    } else if (l.startsWith('#EXT-X-MAP:')) {
+      const a = attrs(l.slice(11));
+      let range = null;
+      if (a.BYTERANGE) { const [n, o] = a.BYTERANGE.split('@').map(Number); range = [o || 0, (o || 0) + n - 1]; }
+      map = { url: abs(a.URI, base), range };
+    } else if (l.startsWith('#EXTINF:')) dur = parseFloat(l.slice(8)) || 0;
+    else if (l.startsWith('#EXT-X-BYTERANGE:')) br = l.slice(17);
+    else if (l === '#EXT-X-DISCONTINUITY') disc++;
+    else if (l === '#EXT-X-ENDLIST') endlist = true;
+    else if (!l.startsWith('#')) {
+      const url = abs(l, base);
+      let range = null;
+      if (br) {
+        const [n, o] = br.split('@').map(Number);
+        const start = Number.isFinite(o) ? o : (lastEnd[url] || 0);
+        range = [start, start + n - 1]; lastEnd[url] = start + n; br = null;
+      }
+      segs.push({ url, dur, key, map, range, disc, seq: seq + segs.length });
+      dur = 0;
+    }
+  }
+  return { type: 'media', segs, endlist, drm: drm && !segs.some((s) => s.key), total: segs.reduce((s, x) => s + x.dur, 0) };
+}
+
+// ---------- utilidades ----------
+const mb = (b) => (b / 1048576).toFixed(1) + ' MB';
+const hms = (s) => { s = Math.round(s); const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60), x = s % 60; return (h ? h + ':' + String(m).padStart(2, '0') : m) + ':' + String(x).padStart(2, '0'); };
+function log(msg, cls = '') {
+  const d = document.createElement('div'); d.textContent = msg; if (cls) d.className = cls;
+  $('log').appendChild(d); $('log').scrollTop = 1e9;
+}
+function hexToBytes(h) {
+  h = h.replace(/^0x/i, '').padStart(32, '0').slice(-32);
+  return new Uint8Array(h.match(/../g).map((x) => parseInt(x, 16)));
+}
+function seqIv(n) { const iv = new Uint8Array(16); new DataView(iv.buffer).setUint32(12, n); return iv; }
+function guessName() {
+  const n = $('name').value.trim().replace(/\.(mp4|ts|m4a|aac)$/i, '');
+  if (n) return n.replace(/[\\/:*?"<>|]+/g, '_');
+  try {
+    const p = new URL($('url').value.trim()).pathname.split('/').filter(Boolean);
+    const last = (p.pop() || 'video').replace(/\.m3u8$/i, '');
+    const generic = /^(index|master|playlist|prog_index|chunklist.*|manifest|video)$/i.test(last);
+    return (generic && p.length ? p.pop() : last).replace(/[^\w.-]+/g, '_') || 'video';
+  } catch { return 'video'; }
+}
+// Extensión de un flujo sin contenedor MP4: TS (0x47) o AAC suelto (ID3 / sincronía ADTS).
+function rawExt(bytes) {
+  if (!bytes || !bytes.length || bytes[0] === 0x47) return 'ts';
+  if ((bytes[0] === 0x49 && bytes[1] === 0x44 && bytes[2] === 0x33) || (bytes[0] === 0xff && (bytes[1] & 0xf6) === 0xf0)) return 'aac';
+  return 'ts';
+}
+const MIME = { mp4: 'video/mp4', m4a: 'audio/mp4', ts: 'video/mp2t', aac: 'audio/aac' };
+
+function setStatus(t) { $('status').textContent = t; }
+function setFill(p) { $('fill').style.width = (p * 100).toFixed(1) + '%'; }
+function resetStats() {
+  setFill(0);
+  $('sSeg').textContent = '0 / 0 fragmentos'; $('sBytes').textContent = '0 MB';
+  $('sSpeed').textContent = '0 MB/s'; $('sEta').textContent = '';
+}
+const busy = () => !!state.abort;
+
+// ---------- análisis ----------
+async function analyze() {
+  const url = $('url').value.trim();
+  if (!url || busy()) return $('url').focus();
+  try { new URL(url); } catch { $('progress').classList.remove('hidden'); setStatus('El enlace no es válido.'); return; }
+  stopPreview();
+  $('pick').classList.add('hidden');
+  $('progress').classList.remove('hidden');
+  $('log').innerHTML = ''; setStatus('Leyendo la lista…'); resetStats();
+  $('analyze').disabled = true;
+  state.resolved.clear(); state.master = state.media = null; state.warnedFallback = false;
+  try {
+    state.mode = 'direct';
+    const { text, finalUrl } = await getText(url);
+    const pl = parse(text, finalUrl);
+    const sel = $('variant'); sel.innerHTML = '';
+    if (pl.type === 'master') {
+      if (!pl.variants.length) throw new Error('La lista maestra no contiene calidades');
+      state.master = pl;
+      pl.variants.forEach((v, i) => sel.add(new Option(`${v.res || 'Calidad ' + (i + 1)} · ${(v.bw / 1e6).toFixed(2)} Mbps`, 'v' + i)));
+      pl.audio.forEach((a, i) => sel.add(new Option(`Solo audio · ${a.name}${a.lang ? ' (' + a.lang + ')' : ''}`, 'a' + i)));
+      $('variantBox').classList.remove('hidden');
+      state.masterLine = `Lista maestra con <b>${pl.variants.length}</b> calidad(es)` + (pl.audio.length ? ` y <b>${pl.audio.length}</b> pista(s) de audio aparte.` : '.');
+      $('summary').innerHTML = state.masterLine;
+      if (pl.audio.length) log('Este stream lleva el audio en pistas separadas: descarga también «Solo audio» y únelos con ffmpeg si el vídeo sale mudo.', 'warn');
+      prefetch();
+    } else {
+      $('variantBox').classList.add('hidden');
+      state.media = pl; state.mediaUrl = finalUrl; state.masterLine = '';
+      state.resolved.set('single', Promise.resolve(pl));
+      showMedia(pl);
+    }
+    $('pick').classList.remove('hidden');
+    setStatus('Listo para descargar.');
+    log(`Conexión: ${state.mode === 'proxy' ? 'proxy local' : 'directa'}`, 'ok');
+  } catch (e) {
+    setStatus('No se pudo leer el enlace.'); log('Error: ' + e.message, 'err');
+  } finally { $('analyze').disabled = false; }
+}
+
+function showMedia(pl) {
+  const enc = pl.segs.find((s) => s.key);
+  $('summary').innerHTML = (state.masterLine ? state.masterLine + '<br>' : '') +
+    `<b>${pl.segs.length}</b> fragmentos · duración <b>${hms(pl.total)}</b>` +
+    (pl.segs[0]?.map ? '<span class="pill">fMP4</span>' : '<span class="pill">TS</span>') +
+    (enc ? `<span class="pill">${enc.key.method}</span>` : '') +
+    (pl.drm ? '<span class="pill">DRM</span>' : '') +
+    (pl.endlist ? '' : '<span class="pill">en directo</span>');
+}
+
+function mediaProblem(pl) {
+  if (!pl.segs.length) return 'La lista no tiene fragmentos';
+  if (pl.drm) return 'Este vídeo está protegido con DRM y no se puede descargar';
+  const bad = pl.segs.find((s) => s.key && (s.key.method !== 'AES-128' || !s.key.uri));
+  if (bad) return bad.key.method !== 'AES-128' ? `Cifrado ${bad.key.method} no compatible (probablemente DRM)` : 'La lista está cifrada pero no indica la clave';
+  return null;
+}
+
+const selKey = () => (state.master ? $('variant').value : 'single');
+function resolveMedia() {
+  const k = selKey();
+  if (!state.resolved.has(k)) {
+    const v = $('variant').value, i = +v.slice(1);
+    const src = v[0] === 'a' ? state.master.audio[i] : state.master.variants[i];
+    const p = getText(src.url).then(({ text, finalUrl }) => {
+      const pl = parse(text, finalUrl);
+      if (pl.type !== 'media') throw new Error('La calidad elegida no es una lista de fragmentos');
+      pl.audioOnly = v[0] === 'a'; pl.url = finalUrl;
+      return pl;
+    });
+    p.catch(() => state.resolved.delete(k));
+    state.resolved.set(k, p);
+  }
+  return state.resolved.get(k);
+}
+// Lee por adelantado la calidad elegida: muestra su duración y deja el formato listo para guardar.
+function prefetch() {
+  const k = selKey();
+  resolveMedia().then((pl) => { if (selKey() === k) showMedia(pl); }).catch(() => {});
+}
+
+// Emby y Jellyfin generan los fragmentos al vuelo (…/Videos/<id>/hls1/main/N.ts): pedir muchos
+// por delante reinicia su conversión y borra los anteriores.
+function isLiveTranscode(pl) {
+  const src = pl.url || state.mediaUrl || $('url').value;
+  return /\/videos\/[^/?]+\/(master|main)\.m3u8/i.test(src) || /PlaySessionId=/i.test(src) ||
+    pl.segs.some((s) => /\/videos\/[^/?]+\/hls\d*\//i.test(s.url));
+}
+
+// ---------- descarga ----------
+async function download() {
+  if (busy()) return;
+  const ctrl = new AbortController(); state.abort = ctrl;
+  let failed = null, writable = null;
+  $('download').disabled = true; $('analyze').disabled = true; $('cancel').classList.remove('hidden');
+  $('progress').classList.remove('hidden'); $('log').innerHTML = ''; resetStats();
+  try {
+    setStatus('Leyendo fragmentos…');
+    let pl = await resolveMedia();
+    if (!pl.endlist) { state.resolved.delete(selKey()); pl = await resolveMedia(); } // directo: lista actual
+    showMedia(pl);
+    const problem = mediaProblem(pl);
+    if (problem) throw new Error(problem);
+    if (!pl.endlist) log('Es una emisión en directo: solo se guardará lo que la lista contiene ahora mismo.', 'warn');
+
+    const total = pl.segs.length, isFmp4 = pl.segs.some((s) => s.map);
+    const transcoding = isLiveTranscode(pl);
+    const base = guessName() + (pl.audioOnly ? '_audio' : '');
+
+    // Guardado directo en disco: el diálogo debe abrirse durante el clic, antes de descargar nada.
+    if ($('todisk').checked && window.showSaveFilePicker && !E.queueRunning) { // en cola no hay clic para el diálogo
+      const ext = isFmp4 ? (pl.audioOnly ? 'm4a' : 'mp4') : (/\.aac(\?|$)/i.test(pl.segs[0].url) ? 'aac' : 'ts');
+      try {
+        const h = await showSaveFilePicker({ suggestedName: base + '.' + ext, types: [{ description: 'Vídeo', accept: { [MIME[ext]]: ['.' + ext] } }] });
+        writable = await h.createWritable();
+      } catch (e) {
+        if (e.name === 'AbortError') { ctrl.abort(); throw e; }
+        throw new Error('El navegador no dejó abrir el diálogo de guardar; pulsa Descargar otra vez');
+      }
+    }
+
+    const keys = new Map();
+    const getKey = (uri) => {
+      if (!keys.has(uri)) {
+        const p = fetchBytes(uri, { signal: ctrl.signal }).then((b) => {
+          if (b.byteLength !== 16) throw new Error(`la clave AES no es válida (${b.byteLength} bytes)`);
+          return crypto.subtle.importKey('raw', b, 'AES-CBC', false, ['decrypt']);
+        });
+        p.catch(() => keys.delete(uri)); // si falla, el siguiente reintento la vuelve a pedir
+        keys.set(uri, p);
+      }
+      return keys.get(uri);
+    };
+
+    const inits = new Map();
+    for (const m of new Set(pl.segs.map((s) => s.map).filter(Boolean))) {
+      inits.set(m, await fetchBytes(m.url, { range: m.range, signal: ctrl.signal }));
+    }
+
+    const parts = new Array(total);
+    let done = 0, bytes = 0, next = 0, writeIdx = 0, writeChain = Promise.resolve(), lastMap = null;
+    const t0 = performance.now();
+    const tick = () => {
+      const secs = (performance.now() - t0) / 1000, speed = bytes / Math.max(secs, 0.1);
+      setFill(done / total);
+      $('sSeg').textContent = `${done} / ${total} fragmentos`;
+      $('sBytes').textContent = mb(bytes);
+      $('sSpeed').textContent = (speed / 1048576).toFixed(2) + ' MB/s';
+      $('sEta').textContent = done && done < total ? 'quedan ~' + hms(secs / done * (total - done)) : '';
+    };
+    // Escribe en orden los fragmentos ya descargados y libera su memoria.
+    const flush = () => {
+      writeChain = writeChain.then(async () => {
+        while (writeIdx < total && parts[writeIdx]) {
+          const s = pl.segs[writeIdx];
+          if (s.map && s.map !== lastMap) { await writable.write(inits.get(s.map)); lastMap = s.map; }
+          await writable.write(parts[writeIdx]);
+          parts[writeIdx++] = null;
+        }
+      });
+      writeChain.catch((e) => { if (!failed && !ctrl.signal.aborted) { failed = new Error('No se pudo escribir el archivo: ' + e.message); ctrl.abort(); } });
+      return writeChain;
+    };
+
+    async function fetchSeg(s, shard) {
+      for (let attempt = 1; ; attempt++) {
+        try {
+          let buf = await fetchBytes(s.url, { range: s.range, signal: ctrl.signal, shard });
+          if (s.key) {
+            const k = await getKey(s.key.uri);
+            const iv = s.key.iv ? hexToBytes(s.key.iv) : seqIv(s.seq);
+            buf = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-CBC', iv }, k, buf));
+          }
+          return buf;
+        } catch (e) {
+          if (ctrl.signal.aborted || e.name === 'AbortError') throw e;
+          // Si el servidor convierte sobre la marcha, un 404/500 suele ser «aún no está listo»: se espera más.
+          const notReady = transcoding && [404, 500, 502, 503].includes(e.status);
+          const permanent = !notReady && [401, 403, 404, 410].includes(e.status);
+          if (permanent || attempt >= (notReady ? 30 : 5)) {
+            throw Object.assign(new Error(`Fragmento ${s.seq}: ${e.message}` + (notReady ? ' (el servidor no llegó a prepararlo)' : '')), { status: e.status });
+          }
+          if (!notReady || attempt === 1 || attempt % 10 === 0) {
+            log(`Fragmento ${s.seq}: ${notReady ? 'el servidor aún lo está preparando' : e.message}, reintento ${attempt}…`, 'warn');
+          }
+          await sleep(notReady ? Math.min(1000 * attempt, 4000) : 600 * attempt);
+        }
+      }
+    }
+
+    let conc = Math.min(Math.max(+$('conc').value || 16, 1), total);
+    if (transcoding && conc > 3) {
+      conc = 3;
+      log('El servidor está convirtiendo el vídeo sobre la marcha: descargo de 3 en 3 y en orden, para no reiniciar su conversión. Irá a la velocidad a la que el servidor convierta.', 'warn');
+    }
+    setStatus('Descargando…');
+    const worker = async (_, w) => {
+      try {
+        while (next < total && !ctrl.signal.aborted) {
+          const i = next++;
+          // En disco, no adelantarse demasiado al fragmento que toca escribir (limita la memoria).
+          while (writable && i - writeIdx > 64 && !ctrl.signal.aborted) await sleep(50);
+          parts[i] = await fetchSeg(pl.segs[i], w);
+          done++; bytes += parts[i].byteLength; tick();
+          if (writable) flush();
+        }
+      } catch (e) {
+        if (!failed && !ctrl.signal.aborted) { failed = e; ctrl.abort(); } // detiene al resto
+        throw e;
+      }
+    };
+    await Promise.all(Array.from({ length: conc }, worker));
+    if (ctrl.signal.aborted) throw failed || new DOMException('cancelado', 'AbortError');
+
+    let name, size;
+    if (writable) {
+      setStatus('Terminando de guardar…');
+      await flush();
+      await writable.close(); writable = null;
+      name = base + '.' + (isFmp4 ? (pl.audioOnly ? 'm4a' : 'mp4') : 'ts');
+      size = bytes;
+    } else {
+      let blob, ext;
+      if (isFmp4) {
+        const out = [];
+        let lm = null;
+        pl.segs.forEach((s, i) => { if (s.map && s.map !== lm) { out.push(inits.get(s.map)); lm = s.map; } out.push(parts[i]); });
+        ext = pl.audioOnly ? 'm4a' : 'mp4';
+        blob = new Blob(out, { type: MIME[ext] });
+      } else {
+        if ($('tomp4').checked) {
+          setStatus('Convirtiendo a MP4…');
+          try { blob = await tsToMp4(parts, pl.segs); ext = pl.audioOnly ? 'm4a' : 'mp4'; }
+          catch (e) { log('No se pudo convertir a MP4 (' + e.message + '), se guarda sin convertir', 'warn'); }
+        }
+        if (!blob) { ext = rawExt(parts[0]); blob = new Blob(parts, { type: MIME[ext] }); }
+      }
+      parts.length = 0;
+      name = base + '.' + ext; size = blob.size;
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob); a.download = name;
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 60000);
+    }
+    setFill(1); setStatus(`Descarga completada: ${name} (${mb(size)})`);
+    log('Guardado ' + name, 'ok');
+  } catch (e) {
+    if (writable) { try { await writable.abort(); } catch {} } // borra el archivo a medias
+    if (failed) { setStatus('La descarga falló.'); log('Error: ' + failed.message, 'err'); }
+    else if (ctrl.signal.aborted || e.name === 'AbortError') { setStatus('Descarga cancelada.'); log('Cancelado.', 'warn'); }
+    else { setStatus('La descarga falló.'); log('Error: ' + e.message, 'err'); }
+  } finally {
+    state.abort = null;
+    $('download').disabled = false; $('analyze').disabled = false; $('cancel').classList.add('hidden');
+  }
+}
+
+let muxLoad;
+function loadScript(src) {
+  return new Promise((ok, ko) => {
+    const s = document.createElement('script'); s.src = src; s.onload = ok;
+    s.onerror = () => { s.remove(); ko(new Error('no se pudo cargar ' + src.split('/npm/')[1])); };
+    document.head.appendChild(s);
+  });
+}
+// Convierte TS a MP4. Cada tramo tras un #EXT-X-DISCONTINUITY (anuncios, cortes) reinicia
+// sus marcas de tiempo, así que se coloca a continuación del anterior.
+async function tsToMp4(chunks, segs) {
+  muxLoad ||= loadScript('https://cdn.jsdelivr.net/npm/mux.js@7.0.3/dist/mux.min.js');
+  try { await muxLoad; } catch (e) { muxLoad = null; throw e; }
+  const pieces = []; let init = null;
+  let start = 0, i = 0;
+  while (i < chunks.length) {
+    // mux.js solo aplica el tiempo base al crear las pistas: un transmuxer nuevo por tramo.
+    const tx = new muxjs.mp4.Transmuxer();
+    tx.on('data', (seg) => { if (!init) init = seg.initSegment; pieces.push(seg.data); });
+    tx.setBaseMediaDecodeTime(Math.round(start * 90000));
+    const group = segs[i].disc;
+    for (; i < chunks.length && segs[i].disc === group; i++) { tx.push(chunks[i]); start += segs[i].dur; }
+    tx.flush();
+  }
+  if (!init || !pieces.length) throw new Error('no se encontró vídeo ni audio compatible');
+  return new Blob([init, ...pieces], { type: 'video/mp4' });
+}
+
+// ---------- vista previa ----------
+let hlsLoad;
+async function preview() {
+  const v = $('player');
+  stopPreview();
+  let src = state.mediaUrl || $('url').value.trim();
+  if (state.master) { const s = $('variant').value; src = (s[0] === 'a' ? state.master.audio : state.master.variants)[+s.slice(1)].url; }
+  let viaProxy;
+  try { await proxyReady; viaProxy = pickMode() === 'proxy' || state.mode === 'proxy'; } catch (e) { return log('Vista previa: ' + e.message, 'err'); }
+  v.style.display = 'block';
+  const needsAuth = addAuth(src) !== src;
+  if (!viaProxy && !needsAuth && v.canPlayType('application/vnd.apple.mpegurl')) { v.src = src; return v.play().catch(() => {}); }
+  hlsLoad ||= loadScript('https://cdn.jsdelivr.net/npm/hls.js@1.5.15/dist/hls.min.js');
+  try { await hlsLoad; } catch (e) { hlsLoad = null; return log('Vista previa: ' + e.message, 'err'); }
+  if (!Hls.isSupported()) return log('Vista previa: este navegador no puede reproducir HLS', 'err');
+  // Pide cada recurso al proxy pero devuelve a hls.js la URL original, para que
+  // resuelva los fragmentos relativos contra el servidor del vídeo y no contra localhost.
+  class ProxyLoader extends Hls.DefaultConfig.loader {
+    load(context, config, callbacks) {
+      const orig = context.url;
+      context.url = viaProxy ? proxify(addAuth(orig)) : addAuth(orig);
+      super.load(context, config, { ...callbacks, onSuccess: (resp, stats, ctx, net) => {
+        resp.url = orig; ctx.url = orig; callbacks.onSuccess(resp, stats, ctx, net);
+      } });
+    }
+  }
+  const hls = new Hls(viaProxy || needsAuth ? { loader: ProxyLoader } : {});
+  hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) log('Vista previa: ' + d.details, 'err'); });
+  hls.loadSource(src); hls.attachMedia(v);
+  state.hls = hls;
+  v.play().catch(() => {});
+}
+function stopPreview() {
+  if (state.hls) { state.hls.destroy(); state.hls = null; }
+  const v = $('player'); v.pause(); v.removeAttribute('src'); v.load(); v.style.display = 'none';
+}
+
+// ---------- ffmpeg ----------
+async function copyFfmpeg() {
+  const url = $('url').value.trim();
+  if (!url) return $('url').focus();
+  const ref = $('referer').value.trim();
+  const cmd = `ffmpeg ${ref ? `-referer "${ref}" ` : ''}-i "${url}" -c copy "${guessName()}.mp4"`;
+  try { await navigator.clipboard.writeText(cmd); $('ffmpeg').textContent = '¡Copiado!'; }
+  catch { prompt('Copia este comando:', cmd); }
+  setTimeout(() => ($('ffmpeg').textContent = 'Copiar comando ffmpeg'), 1500);
+}
+
+// ---------- Emby ----------
+const E = { server: '', token: '', userId: '', user: '', canDownload: false, viaProxy: false, stack: [], renderId: 0, autoName: false };
+const store = {
+  get(k) { try { return JSON.parse(localStorage.getItem(k)); } catch { return null; } },
+  set(k, v) { try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, JSON.stringify(v)); } catch {} },
+};
+const rid = () => Array.from(crypto.getRandomValues(new Uint8Array(16)), (b) => b.toString(16).padStart(2, '0')).join('');
+const deviceId = store.get('embyDevice') || (() => { const id = rid(); store.set('embyDevice', id); return id; })();
+const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; };
+
+const embyAuth = () => `Emby UserId="${E.userId}", Client="Descargador M3U8", Device="Navegador", DeviceId="${deviceId}", Version="1.0.0"` + (E.token ? `, Token="${E.token}"` : '');
+function embyUrl(path, params = {}) {
+  const u = new URL(E.server + path);
+  for (const [k, v] of Object.entries(params || {})) if (v != null && v !== '') u.searchParams.set(k, v);
+  return u.href;
+}
+
+// Llama a la API de Emby: directo si el servidor lo permite (CORS); si no, por el proxy local.
+async function emby(path, params, body) {
+  const url = embyUrl(path, params);
+  const headers = { 'X-Emby-Authorization': embyAuth(), Accept: 'application/json' };
+  if (E.token) headers['X-Emby-Token'] = E.token;
+  if (body) headers['Content-Type'] = 'application/json';
+  const init = { method: body ? 'POST' : 'GET', headers, body: body ? JSON.stringify(body) : undefined };
+  let r;
+  if (!E.viaProxy) {
+    try { r = await fetch(url, init); }
+    catch {
+      await proxyReady;
+      if (!state.proxyOk) throw new Error('No se puede conectar con el servidor Emby. Revisa la dirección o abre la página con «node server.js».');
+      E.viaProxy = true;
+    }
+  }
+  if (E.viaProxy) r = await fetch('/proxy?' + new URLSearchParams({ url }), init);
+  if (r.status === 401 || r.status === 403) {
+    throw Object.assign(new Error(E.token ? 'La sesión de Emby ha caducado: vuelve a conectar.' : 'Usuario o contraseña incorrectos.'), { auth: !!E.token });
+  }
+  if (r.status === 502) throw new Error('No se puede conectar con el servidor Emby: ' + (await r.text()));
+  if (!r.ok) throw Object.assign(new Error('Emby respondió HTTP ' + r.status), { status: r.status });
+  const t = await r.text();
+  try { return t ? JSON.parse(t) : null; } catch { throw new Error('Eso no parece un servidor Emby (la respuesta no es JSON).'); }
+}
+
+function embyMsg(t, err) { $('eMsg').textContent = t; $('eMsg').style.color = err ? 'var(--err)' : ''; }
+
+async function embyLogin() {
+  let server = $('eServer').value.trim().replace(/\/+$/, '');
+  if (!server) return $('eServer').focus();
+  if (!/^https?:\/\//i.test(server)) server = 'http://' + server;
+  try { new URL(server); } catch { return embyMsg('La dirección del servidor no es válida.', true); }
+  Object.assign(E, { server, token: '', userId: '', viaProxy: false });
+  $('eLogin').disabled = true; embyMsg('Conectando…');
+  const creds = { Username: $('eUser').value.trim(), Pw: $('ePass').value };
+  try {
+    let res;
+    try { res = await emby('/Users/AuthenticateByName', null, creds); }
+    catch (e) {
+      // Algunas instalaciones solo responden bajo /emby
+      if (e.status !== 404 || /\/emby$/i.test(server)) throw e;
+      E.server = server += '/emby';
+      res = await emby('/Users/AuthenticateByName', null, creds);
+    }
+    if (!res?.AccessToken || !res.User) throw new Error('Eso no parece un servidor Emby.');
+    $('ePass').value = '';
+    setSession({ server, token: res.AccessToken, userId: res.User.Id, user: res.User.Name,
+      canDownload: res.User.Policy?.EnableContentDownloading !== false, viaProxy: E.viaProxy });
+    embyHome();
+  } catch (e) { embyMsg(e.message, true); }
+  finally { $('eLogin').disabled = false; }
+}
+
+function setSession(s) {
+  Object.assign(E, s);
+  authHosts.set(new URL(s.server).host, s.token);
+  store.set('embySession', s);
+  store.set('embyLast', { server: s.server, user: s.user });
+  $('eWho').textContent = `Conectado a ${new URL(s.server).host} como ${s.user}` + (s.canDownload ? '' : ' (sin permiso de descarga directa)');
+  $('embyLogin').classList.add('hidden'); $('embyLib').classList.remove('hidden');
+}
+
+function embyLogout(msg) {
+  if (E.token && !msg) emby('/Sessions/Logout', null, {}).catch(() => {});
+  try { authHosts.delete(new URL(E.server).host); } catch {}
+  Object.assign(E, { token: '', userId: '', stack: [] });
+  store.set('embySession', null);
+  $('embyLib').classList.add('hidden'); $('embyLogin').classList.remove('hidden');
+  embyMsg(msg || 'Sesión cerrada.', !!msg);
+}
+
+const FIELDS = 'MediaSources,MediaStreams,ProductionYear,RunTimeTicks,ChildCount';
+function embyHome() { E.stack = []; $('eSearch').value = ''; embyOpen({ title: 'Bibliotecas', load: () => emby(`/Users/${E.userId}/Views`) }); }
+function embyOpen(view) { E.stack.push(view); renderView(); }
+function embyBack() { if (E.stack.length > 1) { const v = E.stack.pop(); if (v.search) $('eSearch').value = ''; renderView(); } }
+const children = (it) => emby(`/Users/${E.userId}/Items`, {
+  ParentId: it.Id, Fields: FIELDS, Limit: 1000, SortOrder: 'Ascending',
+  SortBy: it.Type === 'Series' || it.Type === 'Season' ? 'ParentIndexNumber,IndexNumber,SortName' : 'SortName',
+});
+
+async function renderView() {
+  const view = E.stack[E.stack.length - 1], id = ++E.renderId, list = $('eList');
+  $('eBack').classList.toggle('hidden', E.stack.length < 2);
+  $('eTitle').textContent = view.title;
+  list.replaceChildren(el('div', 'empty', 'Cargando…'));
+  try {
+    const res = await view.load();
+    if (id !== E.renderId) return; // ya se ha abierto otra cosa
+    const items = res?.Items || [];
+    E.viewItems = items;
+    refreshPrefs(items);
+    list.replaceChildren(...(items.length ? items.map(renderItem) : [el('div', 'empty', 'No hay nada aquí.')]));
+    $('eSelAll').classList.toggle('hidden', !items.some((it) => PLAYABLE.has(it.Type) || (it.MediaType === 'Video' && !it.IsFolder)));
+    updateSel();
+  } catch (e) {
+    if (id !== E.renderId) return;
+    list.replaceChildren(el('div', 'empty', e.message));
+    if (e.auth) embyLogout(e.message);
+  }
+}
+
+const PLAYABLE = new Set(['Movie', 'Episode', 'Video', 'MusicVideo', 'Trailer']);
+const TYPE_ES = { Movie: 'Película', Episode: 'Episodio', Series: 'Serie', Season: 'Temporada', BoxSet: 'Colección', Folder: 'Carpeta', CollectionFolder: 'Biblioteca', Video: 'Vídeo', MusicVideo: 'Videoclip', Trailer: 'Tráiler' };
+function itemTitle(it) {
+  if (it.Type !== 'Episode') return it.Name || 'Sin título';
+  const se = (it.ParentIndexNumber != null ? 'T' + it.ParentIndexNumber : '') + (it.IndexNumber != null ? 'E' + it.IndexNumber : '');
+  return [it.SeriesName, se, it.Name].filter(Boolean).join(' · ');
+}
+function itemMeta(it) {
+  const ms = it.MediaSources?.[0];
+  return [TYPE_ES[it.Type] || it.Type, it.ProductionYear, it.RunTimeTicks ? hms(it.RunTimeTicks / 1e7) : null,
+    ms?.Size ? mb(ms.Size) : null, ms?.Container?.toUpperCase(), it.ChildCount ? it.ChildCount + ' elementos' : null].filter(Boolean).join(' · ');
+}
+
+function renderItem(it) {
+  const playable = PLAYABLE.has(it.Type) || (it.MediaType === 'Video' && !it.IsFolder);
+  const row = el('div', 'item' + (playable ? '' : ' folder'));
+  const img = el('img', 'thumb'); img.alt = ''; img.loading = 'lazy';
+  const tag = it.ImageTags?.Primary, imgId = tag ? it.Id : it.SeriesId, imgTag = tag || it.SeriesPrimaryImageTag;
+  if (imgId && imgTag) img.src = embyUrl(`/Items/${imgId}/Images/Primary`, { maxHeight: 160, tag: imgTag, api_key: E.token });
+  img.onerror = () => img.removeAttribute('src');
+  const body = el('div');
+  body.append(el('div', 't', itemTitle(it)), el('div', 'm', itemMeta(it)));
+  const langs = langSummary(it);
+  if (langs) body.appendChild(el('div', 'm', langs));
+  if (playable) { const lp = langPickers(it); if (lp) body.appendChild(lp); body.appendChild(itemButtons(it)); }
+  else { row.tabIndex = 0; row.onclick = () => embyOpen({ title: it.Name, load: () => children(it) }); row.onkeydown = (e) => { if (e.key === 'Enter') row.onclick(); }; }
+  row.append(img, body);
+  return row;
+}
+
+// ---------- idiomas ----------
+// Emby da los idiomas en ISO 639-2 (spa, eng…); se pasan a 2 letras para nombrarlos en español.
+const LANG_FIX = { spa: 'es', eng: 'en', fre: 'fr', fra: 'fr', ger: 'de', deu: 'de', ita: 'it', por: 'pt', jpn: 'ja', kor: 'ko',
+  chi: 'zh', zho: 'zh', rus: 'ru', cat: 'ca', glg: 'gl', baq: 'eu', eus: 'eu', dut: 'nl', nld: 'nl', ara: 'ar', hin: 'hi',
+  tur: 'tr', pol: 'pl', swe: 'sv', nor: 'no', dan: 'da', fin: 'fi', gre: 'el', ell: 'el', heb: 'he', cze: 'cs', ces: 'cs',
+  hun: 'hu', rum: 'ro', ron: 'ro', tha: 'th', vie: 'vi', ukr: 'uk', ind: 'id', may: 'ms', msa: 'ms' };
+let langNames; try { langNames = new Intl.DisplayNames(['es'], { type: 'language' }); } catch {}
+const langKey = (s) => { const l = (s.Language || '').toLowerCase().split(/[-_]/)[0]; return LANG_FIX[l] || l || 'und'; };
+function langName(k) {
+  if (k === 'und') return 'Idioma desconocido';
+  try { const n = langNames?.of(k); if (n && n.toLowerCase() !== k) return n[0].toUpperCase() + n.slice(1); } catch {}
+  return k.toUpperCase();
+}
+const tracks = (it, type) => (it.MediaSources?.[0]?.MediaStreams || it.MediaStreams || []).filter((s) => s.Type === type);
+const CHANNELS = { 1: 'mono', 2: 'estéreo', 6: '5.1', 8: '7.1' };
+function streamLabel(s) {
+  const name = langName(langKey(s)), parts = [name];
+  if (s.Title && !s.Title.toLowerCase().includes(name.toLowerCase())) parts.push(s.Title); // p. ej. «Latino», «Castellano»
+  if (s.Type === 'Audio') parts.push([s.Codec?.toUpperCase(), CHANNELS[s.Channels] || (s.Channels ? s.Channels + ' canales' : null)].filter(Boolean).join(' '));
+  else { if (s.IsForced) parts.push('forzados'); if (s.IsHearingImpaired) parts.push('SDH'); }
+  return parts.filter(Boolean).join(' · ');
+}
+function langSummary(it) {
+  const uniq = (type) => [...new Set(tracks(it, type).map((s) => langName(langKey(s))))].join(', ');
+  const a = uniq('Audio'), s = uniq('Subtitle');
+  return [a && 'Audio: ' + a, s && 'Subtítulos: ' + s].filter(Boolean).join(' · ');
+}
+
+// Pistas para un vídeo: lo elegido a mano en él, si no el idioma preferido, si no lo que marque Emby.
+E.choices = new Map();
+function trackChoice(it) {
+  const ms = it.MediaSources?.[0], aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle'), c = E.choices.get(it.Id) || {};
+  const ap = $('eAudioPref').value, sp = $('eSubPref').value;
+  let audio = c.audio, sub = c.sub;
+  if (audio == null) {
+    const pref = ap ? aud.find((s) => langKey(s) === ap) : null;
+    audio = pref ? pref.Index : (ms?.DefaultAudioStreamIndex ?? aud.find((s) => s.IsDefault)?.Index ?? aud[0]?.Index ?? null);
+  }
+  if (sub == null) {
+    const cands = sp ? subs.filter((s) => langKey(s) === sp) : [];
+    sub = (cands.find((s) => !s.IsForced) || cands[0])?.Index ?? -1;
+  }
+  return { audio, sub, audioStream: aud.find((s) => s.Index === audio), subStream: subs.find((s) => s.Index === sub) };
+}
+
+function langPickers(it) {
+  const aud = tracks(it, 'Audio'), subs = tracks(it, 'Subtitle');
+  if (aud.length < 2 && !subs.length) return null;
+  const ch = trackChoice(it), wrap = el('div', 'langs');
+  const pickerFor = (label, opts, value, key) => {
+    const l = el('label'), s = el('select');
+    for (const [v, t] of opts) s.add(new Option(t, v));
+    s.value = String(value);
+    s.onchange = () => { E.choices.set(it.Id, { ...E.choices.get(it.Id), [key]: +s.value }); };
+    l.append(document.createTextNode(label), s);
+    return l;
+  };
+  if (aud.length) wrap.append(pickerFor('Audio', aud.map((s) => [s.Index, streamLabel(s)]), ch.audio, 'audio'));
+  if (subs.length) wrap.append(pickerFor('Subtítulos', [[-1, 'Sin subtítulos'], ...subs.map((s) => [s.Index, streamLabel(s)])], ch.sub, 'sub'));
+  return wrap;
+}
+
+// Las listas de idiomas preferidos se van llenando con los que aparecen en el catálogo.
+const PREF_KEYS = { eAudioPref: new Set(), eSubPref: new Set() };
+function refreshPrefs(items) {
+  let changed = false;
+  for (const it of items) {
+    for (const s of tracks(it, 'Audio')) if (!PREF_KEYS.eAudioPref.has(langKey(s))) { PREF_KEYS.eAudioPref.add(langKey(s)); changed = true; }
+    for (const s of tracks(it, 'Subtitle')) if (!PREF_KEYS.eSubPref.has(langKey(s))) { PREF_KEYS.eSubPref.add(langKey(s)); changed = true; }
+  }
+  if (changed) for (const id of Object.keys(PREF_KEYS)) fillPref(id);
+}
+function fillPref(id) {
+  const sel = $(id), keep = sel.value, first = sel.options[0];
+  const keys = [...PREF_KEYS[id]].sort((a, b) => langName(a).localeCompare(langName(b), 'es'));
+  sel.replaceChildren(first, ...keys.map((k) => new Option(langName(k), k)));
+  sel.value = keep;
+}
+const savedPrefs = store.get('embyLangs') || {};
+for (const id of Object.keys(PREF_KEYS)) {
+  if (savedPrefs[id]) { PREF_KEYS[id].add(savedPrefs[id]); fillPref(id); $(id).value = savedPrefs[id]; }
+  $(id).onchange = () => {
+    store.set('embyLangs', { eAudioPref: $('eAudioPref').value, eSubPref: $('eSubPref').value });
+    if (E.viewItems) { $('eList').replaceChildren(...E.viewItems.map(renderItem)); updateSel(); } // aplica a la lista visible
+  };
+}
+
+function fileName(it) {
+  const { audioStream, subStream } = trackChoice(it);
+  let n = itemTitle(it);
+  const aud = tracks(it, 'Audio');
+  if (audioStream && aud.length > 1) {
+    // Si hay varias pistas del mismo idioma (Castellano/Latino), añade su título para distinguirlas.
+    const twin = aud.some((s) => s !== audioStream && langKey(s) === langKey(audioStream));
+    n += ` [${langName(langKey(audioStream))}${twin && audioStream.Title ? ' ' + audioStream.Title : ''}]`;
+  }
+  if (subStream) n += ` [subs ${langName(langKey(subStream))}]`;
+  return n.replace(/[\\/:*?"<>|]+/g, '_');
+}
+
+function m3u8Url(it) {
+  const rate = +$('eRate').value, ms = it.MediaSources?.[0], { audio, sub } = trackChoice(it);
+  const width = { 4000000: 1280, 1500000: 854 }[rate];
+  return embyUrl(`/Videos/${it.Id}/master.m3u8`, {
+    MediaSourceId: ms?.Id || it.Id, DeviceId: deviceId, PlaySessionId: rid(), api_key: E.token,
+    VideoCodec: 'h264', AudioCodec: 'aac', VideoBitrate: rate - 192000, AudioBitrate: 192000, MaxWidth: width,
+    TranscodingMaxAudioChannels: 2, SegmentContainer: 'ts', MinSegments: 1, BreakOnNonKeyFrames: 'True',
+    AudioStreamIndex: audio,
+    // Subtítulos incrustados en la imagen: obliga a recodificar el vídeo.
+    SubtitleStreamIndex: sub >= 0 ? sub : null, SubtitleMethod: sub >= 0 ? 'Encode' : null,
+    AllowVideoStreamCopy: rate >= 20000000 && sub < 0 ? 'true' : 'false', AllowAudioStreamCopy: 'true',
+  });
+}
+
+function itemButtons(it) {
+  const box = el('div', 'btns');
+  const orig = el('button', 'primary', 'Descargar original');
+  orig.title = 'El archivo tal cual: incluye todos sus idiomas y subtítulos';
+  if (!E.canDownload) { orig.disabled = true; orig.title = 'Tu usuario de Emby no tiene permiso para descargar: usa «Bajar como M3U8»'; }
+  orig.onclick = () => {
+    const a = document.createElement('a');
+    a.href = embyUrl(`/Items/${it.Id}/Download`, { api_key: E.token }); a.download = '';
+    document.body.appendChild(a); a.click(); a.remove();
+  };
+  const viaHls = el('button', '', 'Bajar como M3U8');
+  viaHls.onclick = () => {
+    if (busy()) return alert('Espera a que termine la descarga en curso o cancélala.');
+    showTab('m3u8');
+    $('url').value = m3u8Url(it);
+    $('name').value = fileName(it); E.autoName = true;
+    analyze();
+  };
+  const copy = el('button', '', 'Copiar enlace M3U8');
+  copy.onclick = async () => {
+    const u = m3u8Url(it);
+    try { await navigator.clipboard.writeText(u); copy.textContent = '¡Copiado!'; } catch { prompt('Copia este enlace:', u); }
+    setTimeout(() => (copy.textContent = 'Copiar enlace M3U8'), 1500);
+  };
+  const pick = el('label', 'pick');
+  const cb = el('input'); cb.type = 'checkbox'; cb.dataset.id = it.Id; cb.checked = E.selected.has(it.Id);
+  cb.onchange = () => { if (cb.checked) E.selected.set(it.Id, it); else E.selected.delete(it.Id); updateSel(); };
+  pick.append(cb, document.createTextNode('Seleccionar'));
+  box.append(orig, viaHls, copy, pick);
+  return box;
+}
+
+// ---------- selección y cola ----------
+E.selected = new Map();
+function updateSel() {
+  const n = E.selected.size;
+  $('eQueueBar').classList.toggle('hidden', !n && !E.queueRunning);
+  if (!E.queueRunning) $('eSelCount').textContent = `${n} vídeo(s) seleccionado(s)`;
+  $('eQueueGo').disabled = !!E.queueRunning || !n;
+  document.querySelectorAll('#eList input[data-id]').forEach((c) => {
+    c.checked = E.selected.has(c.dataset.id);
+    c.closest('.item').classList.toggle('sel', c.checked);
+  });
+}
+// Descarga los seleccionados de uno en uno por M3U8 (funciona aunque el usuario no tenga permiso de descarga).
+async function runQueue() {
+  if (busy() || E.queueRunning || !E.selected.size) return;
+  const items = [...E.selected.values()];
+  E.queueRunning = true; updateSel();
+  showTab('m3u8');
+  let ok = 0;
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      $('eSelCount').textContent = `Descargando ${i + 1} de ${items.length}: ${itemTitle(it)}`;
+      $('url').value = m3u8Url(it);
+      $('name').value = fileName(it); E.autoName = true;
+      await analyze();
+      if ($('pick').classList.contains('hidden')) continue; // no se pudo leer: pasa al siguiente
+      log(`Cola: ${i + 1} de ${items.length}`, 'ok');
+      await download();
+      if (/cancelada/.test($('status').textContent)) break; // cancelar detiene toda la cola
+      if (/completada/.test($('status').textContent)) { ok++; E.selected.delete(it.Id); }
+    }
+  } finally {
+    E.queueRunning = false; updateSel();
+    log(`Cola terminada: ${ok} de ${items.length} descargados.`, ok === items.length ? 'ok' : 'warn');
+  }
+}
+$('eQueueGo').onclick = runQueue;
+$('eSelClear').onclick = () => { E.selected.clear(); updateSel(); };
+$('eSelAll').onclick = () => {
+  for (const it of E.viewItems || []) if (PLAYABLE.has(it.Type) || (it.MediaType === 'Video' && !it.IsFolder)) E.selected.set(it.Id, it);
+  updateSel();
+};
+
+let searchTimer;
+$('eSearch').addEventListener('input', () => {
+  clearTimeout(searchTimer);
+  searchTimer = setTimeout(() => {
+    const q = $('eSearch').value.trim();
+    while (E.stack.length > 1 && E.stack[E.stack.length - 1].search) E.stack.pop();
+    if (!q) return renderView();
+    embyOpen({ title: `Resultados de «${q}»`, search: true, load: () => emby(`/Users/${E.userId}/Items`, {
+      Recursive: true, SearchTerm: q, IncludeItemTypes: 'Movie,Series,Episode,Video,MusicVideo', Fields: FIELDS, Limit: 100,
+    }) });
+  }, 350);
+});
+$('eLogin').onclick = embyLogin;
+$('ePass').addEventListener('keydown', (e) => { if (e.key === 'Enter') embyLogin(); });
+$('eLogout').onclick = () => embyLogout();
+$('eBack').onclick = embyBack;
+
+function showTab(t) {
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('active', b.dataset.tab === t));
+  $('tab-m3u8').classList.toggle('hidden', t !== 'm3u8');
+  $('tab-emby').classList.toggle('hidden', t !== 'emby');
+  store.set('tab', t);
+}
+document.querySelectorAll('.tab').forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+
+const last = store.get('embyLast');
+if (last) { $('eServer').value = last.server || ''; $('eUser').value = last.user || ''; }
+const saved = store.get('embySession');
+if (saved?.token) { setSession(saved); embyHome(); }
+if (store.get('tab') === 'emby') showTab('emby');
+
+if (!window.showSaveFilePicker) $('diskRow').classList.add('hidden');
+$('analyze').onclick = analyze;
+$('download').onclick = download;
+$('cancel').onclick = () => state.abort?.abort();
+$('preview').onclick = preview;
+$('ffmpeg').onclick = copyFfmpeg;
+$('url').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('analyze').disabled) analyze(); });
+// Si cambias el enlace, el análisis anterior deja de valer.
+$('url').addEventListener('input', () => {
+  if (E.autoName) { $('name').value = ''; E.autoName = false; } // el nombre puesto desde Emby ya no vale
+  if (busy() || $('pick').classList.contains('hidden')) return;
+  stopPreview(); $('pick').classList.add('hidden');
+  state.master = state.media = state.mediaUrl = null; state.resolved.clear();
+});
+$('variant').onchange = () => { stopPreview(); prefetch(); };
+</script>
+</body>
+</html>

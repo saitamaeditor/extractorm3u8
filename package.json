@@ -1,0 +1,13 @@
+{
+  "name": "extractorm3u8",
+  "version": "1.0.0",
+  "description": "Web local para descargar vídeos M3U8 y desde Emby",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

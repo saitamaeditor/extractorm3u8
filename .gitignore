@@ -1,0 +1,7 @@
+node_modules/
+*.ts
+*.mp4
+*.m4a
+*.aac
+.DS_Store
+Thumbs.db
